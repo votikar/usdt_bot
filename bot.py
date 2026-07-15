@@ -9,13 +9,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
 
-# ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8221747840:AAHWUVECN07_ldY8aLutcr9qLnsKtRt45Uc"   # ваш токен
-ADMIN_ID = 8891085561                    # ваш Telegram ID
+BOT_TOKEN = "8221747840:AAHWUVECN07_ldY8aLutcr9qLnsKtRt45Uc"
+ADMIN_ID = 8891085561
 
 DELTA_FILE = "delta.json"
 
-# ========== РАБОТА С ДЕЛЬТОЙ ==========
 def load_delta() -> float:
     if Path(DELTA_FILE).exists():
         try:
@@ -32,7 +30,6 @@ def save_delta(value: float):
 
 DELTA = load_delta()
 
-# ========== ПОЛУЧЕНИЕ КУРСА С RAPIRA (USDT/RUB) ==========
 def get_usdt_rub_from_rapira() -> float | None:
     url = "https://api.rapira.net/open/market/rates"
     try:
@@ -47,7 +44,6 @@ def get_usdt_rub_from_rapira() -> float | None:
         logging.error(f"Ошибка получения курса с Rapira: {e}")
         return None
 
-# ========== ПОЛУЧЕНИЕ КУРСА USDT/CNY (CoinGecko) ==========
 def get_usdt_cny() -> float | None:
     url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
     try:
@@ -59,7 +55,6 @@ def get_usdt_cny() -> float | None:
         logging.error(f"Ошибка получения курса USDT/CNY: {e}")
         return None
 
-# ========== ОСНОВНАЯ ЛОГИКА ==========
 def get_rate_with_delta() -> float | None:
     rate = get_usdt_rub_from_rapira()
     if rate is None:
@@ -82,12 +77,10 @@ def convert_rub_to_usdt_and_cny(amount_rub: float) -> dict | None:
         "cny_amount": cny_amount,
     }
 
-# ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
 @dp.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
@@ -141,7 +134,7 @@ async def convert_command(message: Message):
 async def set_delta_command(message: Message):
     global DELTA
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ У вас нет прав на изменение дельты.")
+        await message.answer("⛔ У вас нет прав.")
         return
     args = message.text.split()
     if len(args) < 2:
@@ -165,7 +158,6 @@ async def help_command(message: Message):
         "💡 Пример: `/convert 1000000`"
     )
 
-# ========== ЗАПУСК ==========
 async def main():
     await dp.start_polling(bot)
 
