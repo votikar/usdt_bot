@@ -21,9 +21,9 @@ _cache = {
     "usdt_rub": None,
     "usdt_cny": None,
     "timestamp": None,
-    "last_successful_cny": None  # храним последний успешный курс CNY
+    "last_successful_cny": None
 }
-CACHE_TTL = 30  # секунд
+CACHE_TTL = 60  # секунд
 
 # ---------- Работа с дельтами ----------
 def load_deltas():
@@ -52,7 +52,6 @@ deltas = load_deltas()
 
 # ---------- Отправка ошибки админу ----------
 async def notify_admin_error(error_text):
-    """Отправляет сообщение об ошибке админу."""
     try:
         bot = Bot(token=BOT_TOKEN)
         await bot.send_message(ADMIN_ID, f"⚠️ **Ошибка бота:**\n{error_text}")
@@ -60,7 +59,7 @@ async def notify_admin_error(error_text):
     except:
         pass
 
-# ---------- Получение курсов с кешированием и резервом ----------
+# ---------- Получение курсов ----------
 def get_usdt_rub_rate(force=False):
     now = datetime.now()
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
@@ -90,13 +89,31 @@ def get_usdt_cny_rate(force=False):
         if _cache["usdt_cny"] is not None:
             return _cache["usdt_cny"]
 
-    # 1. Пробуем CoinGecko
+    # 1. Пробуем Bybit (основной источник)
+    try:
+        url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTCNY"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("retCode") == 0:
+                ticker = data["result"]["list"][0]
+                rate = float(ticker["lastPrice"])
+                _cache["usdt_cny"] = rate
+                _cache["last_successful_cny"] = rate
+                _cache["timestamp"] = now
+                logging.info(f"CNY rate from Bybit: {rate}")
+                return rate
+    except Exception as e:
+        logging.warning(f"Bybit USDT/CNY failed: {e}")
+
+    # 2. Пробуем CoinGecko (резерв)
     url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 429:
-                time.sleep(2)
+                logging.warning(f"CoinGecko rate limit, attempt {attempt+1}/3, waiting 3s")
+                time.sleep(3)
                 continue
             resp.raise_for_status()
             data = resp.json()
@@ -104,31 +121,18 @@ def get_usdt_cny_rate(force=False):
             _cache["usdt_cny"] = rate
             _cache["last_successful_cny"] = rate
             _cache["timestamp"] = now
+            logging.info(f"CNY rate from CoinGecko: {rate}")
             return rate
         except Exception as e:
             logging.warning(f"CoinGecko attempt {attempt+1} failed: {e}")
-            time.sleep(1)
-
-    # 2. Пробуем Binance (USDT/CNY нет, используем USD/CNY как приближение)
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=USDCNY"
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        rate = float(data["price"])
-        _cache["usdt_cny"] = rate
-        _cache["last_successful_cny"] = rate
-        _cache["timestamp"] = now
-        return rate
-    except Exception as e:
-        logging.warning(f"Binance USD/CNY failed: {e}")
+            time.sleep(2)
 
     # 3. Если всё упало, возвращаем последний успешный курс
     if _cache["last_successful_cny"] is not None:
         logging.warning("Using cached CNY rate")
         return _cache["last_successful_cny"]
 
-    # 4. Если ничего нет, сообщаем админу и возвращаем None
+    # 4. Ничего не получилось
     asyncio.create_task(notify_admin_error("Не удалось получить курс CNY ни из одного источника"))
     return None
 
