@@ -12,8 +12,11 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 
-BOT_TOKEN = "8221747840:AAHWUVECN07_ldY8aLutcr9qLnsKtRt45Uc"
-ADMIN_ID = 8891085561
+# ---------- Чтение токена и ID из переменных окружения ----------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не задан в переменных окружения")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
 # ---------- Чтение дельт из переменных окружения (с запасными значениями) ----------
 def get_delta_from_env(key, default):
@@ -38,18 +41,12 @@ _cache = {
     "timestamp": None,
     "last_successful_cny": None
 }
-CACHE_TTL = 60
+CACHE_TTL = 60  # секунд
 
-# ---------- Отправка ошибки админу ----------
-async def notify_admin_error(error_text):
-    try:
-        bot = Bot(token=BOT_TOKEN)
-        await bot.send_message(ADMIN_ID, f"⚠️ **Ошибка бота:**\n{error_text}")
-        await bot.session.close()
-    except:
-        pass
+# ---------- Логирование ----------
+logging.basicConfig(level=logging.INFO)
 
-# ---------- Получение курсов ----------
+# ---------- Функции получения курсов ----------
 def get_usdt_rub_rate(force=False):
     now = datetime.now()
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
@@ -70,7 +67,6 @@ def get_usdt_rub_rate(force=False):
         return None
     except Exception as e:
         logging.error(f"Rapira error: {e}")
-        asyncio.create_task(notify_admin_error(f"Rapira не отвечает: {e}"))
         return None
 
 def get_usdt_cny_rate(force=False):
@@ -122,11 +118,9 @@ def get_usdt_cny_rate(force=False):
         logging.warning("Using cached CNY rate")
         return _cache["last_successful_cny"]
 
-    # 4. Ничего не получилось
-    asyncio.create_task(notify_admin_error("Не удалось получить курс CNY ни из одного источника"))
     return None
 
-# ---------- Функции конвертации ----------
+# ---------- Функции конвертации с применением дельт ----------
 def convert_rub_to_usdt_cny(amount_rub):
     usdt_rate = get_usdt_rub_rate()
     cny_rate = get_usdt_cny_rate()
@@ -140,6 +134,8 @@ def convert_rub_to_usdt_cny(amount_rub):
         "amount_rub": amount_rub,
         "usdt": usdt,
         "cny": cny,
+        "usdt_rate_with_delta": usdt_rate_with_delta,
+        "cny_rate_with_delta": cny_rate_with_delta,
     }
 
 def convert_usdt_to_rub(amount_usdt):
@@ -153,7 +149,15 @@ def convert_usdt_to_rub(amount_usdt):
     return {
         "amount_usdt": amount_usdt,
         "rub": rub,
+        "rate_with_delta": rate_with_delta,
     }
+
+# ---------- Функция для вывода курса с дельтой ----------
+def get_final_usdt_rub_rate():
+    rate = get_usdt_rub_rate()
+    if rate is None:
+        return None
+    return rate + deltas["delta_rub_to_usdt"]  # для отображения в /course
 
 # ---------- Инициализация бота ----------
 bot = Bot(token=BOT_TOKEN)
@@ -167,7 +171,6 @@ async def set_default_commands():
         BotCommand(command="course", description="📈 Текущий курс USDT/RUB и USDT/CNY"),
         BotCommand(command="convert_rub", description="💱 Конвертировать рубли → USDT/CNY"),
         BotCommand(command="convert_usdt", description="💰 Конвертировать USDT → рубли"),
-        BotCommand(command="show_deltas", description="🔧 Показать текущие дельты (админ)"),
         BotCommand(command="help", description="❓ Справка")
     ])
 
@@ -180,20 +183,13 @@ async def start_cmd(message: Message):
         [InlineKeyboardButton(text="💰 USDT → рубли", callback_data="convert_usdt")],
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
     ])
-    # При старте сразу показываем курс
-    rub_rate = get_usdt_rub_rate(force=True)
-    cny_rate = get_usdt_cny_rate(force=True)
+    final_rate = get_final_usdt_rub_rate()
     now = datetime.now().strftime("%d.%m.%Y, %H:%M")
     course_text = ""
-    if rub_rate is not None:
-        course_text = f"\n📈 **Курс на {now}**\n🇺🇸 USDT/RUB: **{rub_rate:.2f}** ₽"
-        if cny_rate is not None:
-            course_text += f"\n🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
-        else:
-            course_text += "\n🇨🇳 USDT/CNY: ❌"
+    if final_rate is not None:
+        course_text = f"\n📈 **Курс USDT/RUB: {final_rate:.2f}** ₽ (с учётом дельты)"
     else:
         course_text = "\n❌ Не удалось получить курс"
-
     await message.answer(
         f"👋 Привет! Я бот для конвертации криптовалют.\n\n"
         f"Используй кнопки ниже или команды из меню.{course_text}",
@@ -225,18 +221,18 @@ async def help_callback(callback: CallbackQuery):
 
 @dp.message(Command("course"))
 async def course_cmd(message: Message):
-    rub_rate = get_usdt_rub_rate(force=True)
+    final_rate = get_final_usdt_rub_rate()
     cny_rate = get_usdt_cny_rate(force=True)
     now = datetime.now().strftime("%d.%m.%Y, %H:%M")
-    if rub_rate is None:
-        await message.answer("❌ Не удалось получить курс USDT/RUB. Попробуйте позже.")
+    if final_rate is None:
+        await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
         return
     response = f"📈 **Курсы на {now}**\n\n"
-    response += f"🇺🇸 USDT/RUB: **{rub_rate:.2f}** ₽\n"
+    response += f"🇺🇸 USDT/RUB (с дельтой): **{final_rate:.2f}** ₽\n"
     if cny_rate is not None:
         response += f"🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
     else:
-        response += f"🇨🇳 USDT/CNY: ❌ не удалось получить"
+        response += f"🇨🇳 USDT/CNY: ❌"
     await message.answer(response, parse_mode="Markdown")
 
 @dp.message(Command("convert_rub"))
@@ -269,81 +265,18 @@ async def convert_usdt_cmd(message: Message):
         await message.answer("Введите сумму в USDT (например, 500):")
         waiting_for_usdt[message.from_user.id] = True
 
-@dp.message(Command("show_deltas"))
-async def show_deltas(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Только для администратора.")
-        return
-    text = (
-        f"🔧 **Текущие дельты:**\n\n"
-        f"RUB → USDT: **{deltas['delta_rub_to_usdt']:.2f}** ₽\n"
-        f"USDT → CNY: **{deltas['delta_usdt_to_cny']:.2f}** ¥\n"
-        f"USDT → RUB: **{deltas['delta_usdt_to_rub']:.2f}** ₽"
-    )
-    await message.answer(text, parse_mode="Markdown")
-
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     await message.answer(
         "📋 **Доступные команды:**\n\n"
-        "/course – текущий курс USDT/RUB и USDT/CNY\n"
+        "/course – текущий курс USDT/RUB с дельтой\n"
         "/convert_rub [сумма] – конвертировать рубли в USDT и CNY\n"
         "/convert_usdt [сумма] – конвертировать USDT в рубли\n"
-        "/show_deltas – показать текущие дельты (админ)\n"
         "/help – эта справка\n\n"
         "💡 Примеры:\n"
         "/convert_rub 10000\n"
         "/convert_usdt 500"
     )
-
-# ---------- Админ-команды для изменения дельт (они теперь тоже обновляют переменные окружения? Но мы не можем менять их через код, поэтому оставим как есть, но они будут менять значение в памяти, а при перезапуске вернутся к значениям из окружения. Чтобы изменения сохранялись, нужно либо хранить в базе, либо обновлять переменные через API Render. Для простоты пока оставим так: команды изменяют дельты в памяти, но при перезапуске они сбросятся к значениям из окружения. Если хотите постоянного изменения, лучше использовать файл, но тогда проблема сброса. Пока предлагаю так: пользователь меняет дельты командами, они действуют до перезапуска, а после перезапуска берутся из окружения. ----------
-@dp.message(Command("set_delta_rub_usdt"))
-async def set_delta_rub_usdt(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Только для администратора.")
-        return
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_rub_usdt 0.30`", parse_mode="Markdown")
-        return
-    try:
-        val = float(args[1].replace(',', '.'))
-        deltas["delta_rub_to_usdt"] = val
-        await message.answer(f"✅ Дельта RUB→USDT установлена на **{val:.2f}** ₽ (до перезапуска)")
-    except:
-        await message.answer("❌ Введите корректное число.")
-
-@dp.message(Command("set_delta_usdt_cny"))
-async def set_delta_usdt_cny(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Только для администратора.")
-        return
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_usdt_cny 0.10`", parse_mode="Markdown")
-        return
-    try:
-        val = float(args[1].replace(',', '.'))
-        deltas["delta_usdt_to_cny"] = val
-        await message.answer(f"✅ Дельта USDT→CNY установлена на **{val:.2f}** ¥ (до перезапуска)")
-    except:
-        await message.answer("❌ Введите корректное число.")
-
-@dp.message(Command("set_delta_usdt_rub"))
-async def set_delta_usdt_rub(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Только для администратора.")
-        return
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_usdt_rub 0.20`", parse_mode="Markdown")
-        return
-    try:
-        val = float(args[1].replace(',', '.'))
-        deltas["delta_usdt_to_rub"] = val
-        await message.answer(f"✅ Дельта USDT→RUB установлена на **{val:.2f}** ₽ (до перезапуска)")
-    except:
-        await message.answer("❌ Введите корректное число.")
 
 # ---------- Обработка текстовых сообщений ----------
 @dp.message(F.text)
@@ -375,7 +308,7 @@ async def handle_text(message: Message):
 
     await message.answer("Используйте команды из меню или отправьте /help")
 
-# ---------- Конвертация с улучшенной анимацией ----------
+# ---------- Конвертация с анимацией ----------
 async def process_rub_conversion(message: Message, amount_rub):
     loading = await message.answer("⏳ Конвертирую...")
     await asyncio.sleep(0.3)
@@ -412,6 +345,20 @@ async def process_usdt_conversion(message: Message, amount_usdt):
         f"✅ Готово!",
         parse_mode="Markdown"
     )
+
+# ---------- Админ-команда для просмотра текущих дельт (опционально) ----------
+@dp.message(Command("show_deltas"))
+async def show_deltas(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Только для администратора.")
+        return
+    text = (
+        f"🔧 **Текущие дельты:**\n\n"
+        f"RUB → USDT: **{deltas['delta_rub_to_usdt']:.2f}** ₽\n"
+        f"USDT → CNY: **{deltas['delta_usdt_to_cny']:.2f}** ¥\n"
+        f"USDT → RUB: **{deltas['delta_usdt_to_rub']:.2f}** ₽"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
 # ---------- Запуск ----------
 async def main():
