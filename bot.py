@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +16,16 @@ ADMIN_ID = 8891085561
 
 DELTA_FILE = "deltas.json"
 
-# Загрузка дельт
+# ---------- Кеш для курсов ----------
+_cache = {
+    "usdt_rub": None,
+    "usdt_cny": None,
+    "timestamp": None,
+    "last_successful_cny": None  # храним последний успешный курс CNY
+}
+CACHE_TTL = 30  # секунд
+
+# ---------- Работа с дельтами ----------
 def load_deltas():
     default = {
         "delta_rub_to_usdt": 0.30,
@@ -40,8 +50,23 @@ def save_deltas(deltas):
 
 deltas = load_deltas()
 
-# Функции получения курсов
-def get_usdt_rub_rate():
+# ---------- Отправка ошибки админу ----------
+async def notify_admin_error(error_text):
+    """Отправляет сообщение об ошибке админу."""
+    try:
+        bot = Bot(token=BOT_TOKEN)
+        await bot.send_message(ADMIN_ID, f"⚠️ **Ошибка бота:**\n{error_text}")
+        await bot.session.close()
+    except:
+        pass
+
+# ---------- Получение курсов с кешированием и резервом ----------
+def get_usdt_rub_rate(force=False):
+    now = datetime.now()
+    if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
+        if _cache["usdt_rub"] is not None:
+            return _cache["usdt_rub"]
+
     url = "https://api.rapira.net/open/market/rates"
     try:
         resp = requests.get(url, timeout=10)
@@ -49,24 +74,65 @@ def get_usdt_rub_rate():
         data = resp.json()
         for item in data.get("data", []):
             if item.get("symbol") == "USDT/RUB":
-                return float(item.get("askPrice", 0))
+                rate = float(item.get("askPrice", 0))
+                _cache["usdt_rub"] = rate
+                _cache["timestamp"] = now
+                return rate
         return None
     except Exception as e:
         logging.error(f"Rapira error: {e}")
+        asyncio.create_task(notify_admin_error(f"Rapira не отвечает: {e}"))
         return None
 
-def get_usdt_cny_rate():
+def get_usdt_cny_rate(force=False):
+    now = datetime.now()
+    if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
+        if _cache["usdt_cny"] is not None:
+            return _cache["usdt_cny"]
+
+    # 1. Пробуем CoinGecko
     url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 429:
+                time.sleep(2)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            rate = float(data["tether"]["cny"])
+            _cache["usdt_cny"] = rate
+            _cache["last_successful_cny"] = rate
+            _cache["timestamp"] = now
+            return rate
+        except Exception as e:
+            logging.warning(f"CoinGecko attempt {attempt+1} failed: {e}")
+            time.sleep(1)
+
+    # 2. Пробуем Binance (USDT/CNY нет, используем USD/CNY как приближение)
     try:
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=USDCNY"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        return float(data["tether"]["cny"])
+        rate = float(data["price"])
+        _cache["usdt_cny"] = rate
+        _cache["last_successful_cny"] = rate
+        _cache["timestamp"] = now
+        return rate
     except Exception as e:
-        logging.error(f"CoinGecko error: {e}")
-        return None
+        logging.warning(f"Binance USD/CNY failed: {e}")
 
-# Конвертация
+    # 3. Если всё упало, возвращаем последний успешный курс
+    if _cache["last_successful_cny"] is not None:
+        logging.warning("Using cached CNY rate")
+        return _cache["last_successful_cny"]
+
+    # 4. Если ничего нет, сообщаем админу и возвращаем None
+    asyncio.create_task(notify_admin_error("Не удалось получить курс CNY ни из одного источника"))
+    return None
+
+# ---------- Функции конвертации ----------
 def convert_rub_to_usdt_cny(amount_rub):
     usdt_rate = get_usdt_rub_rate()
     cny_rate = get_usdt_cny_rate()
@@ -95,24 +161,23 @@ def convert_usdt_to_rub(amount_usdt):
         "rub": rub,
     }
 
-# Инициализация бота
+# ---------- Инициализация бота ----------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище для ожидания ввода
 waiting_for_rub = {}
 waiting_for_usdt = {}
 
-# Установка команд меню
 async def set_default_commands():
     await bot.set_my_commands([
-        BotCommand(command="course", description="📈 Текущий курс USDT/RUB"),
+        BotCommand(command="course", description="📈 Текущий курс USDT/RUB и USDT/CNY"),
         BotCommand(command="convert_rub", description="💱 Конвертировать рубли → USDT/CNY"),
         BotCommand(command="convert_usdt", description="💰 Конвертировать USDT → рубли"),
+        BotCommand(command="show_deltas", description="🔧 Показать текущие дельты (админ)"),
         BotCommand(command="help", description="❓ Справка")
     ])
 
-# Обработчики
+# ---------- Обработчики команд ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -151,12 +216,19 @@ async def help_callback(callback: CallbackQuery):
 
 @dp.message(Command("course"))
 async def course_cmd(message: Message):
-    rate = get_usdt_rub_rate()
-    if rate is None:
-        await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
-        return
+    rub_rate = get_usdt_rub_rate(force=True)
+    cny_rate = get_usdt_cny_rate(force=True)
     now = datetime.now().strftime("%d.%m.%Y, %H:%M")
-    await message.answer(f"📈 **Курс USDT/RUB**\n🕐 {now}\n\n💰 **{rate:.2f}** ₽", parse_mode="Markdown")
+    if rub_rate is None:
+        await message.answer("❌ Не удалось получить курс USDT/RUB. Попробуйте позже.")
+        return
+    response = f"📈 **Курсы на {now}**\n\n"
+    response += f"🇺🇸 USDT/RUB: **{rub_rate:.2f}** ₽\n"
+    if cny_rate is not None:
+        response += f"🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
+    else:
+        response += f"🇨🇳 USDT/CNY: ❌ не удалось получить"
+    await message.answer(response, parse_mode="Markdown")
 
 @dp.message(Command("convert_rub"))
 async def convert_rub_cmd(message: Message):
@@ -188,20 +260,34 @@ async def convert_usdt_cmd(message: Message):
         await message.answer("Введите сумму в USDT (например, 500):")
         waiting_for_usdt[message.from_user.id] = True
 
+@dp.message(Command("show_deltas"))
+async def show_deltas(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Только для администратора.")
+        return
+    text = (
+        f"🔧 **Текущие дельты:**\n\n"
+        f"RUB → USDT: **{deltas['delta_rub_to_usdt']:.2f}** ₽\n"
+        f"USDT → CNY: **{deltas['delta_usdt_to_cny']:.2f}** ¥\n"
+        f"USDT → RUB: **{deltas['delta_usdt_to_rub']:.2f}** ₽"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     await message.answer(
         "📋 **Доступные команды:**\n\n"
-        "/course – текущий курс USDT/RUB\n"
+        "/course – текущий курс USDT/RUB и USDT/CNY\n"
         "/convert_rub [сумма] – конвертировать рубли в USDT и CNY\n"
         "/convert_usdt [сумма] – конвертировать USDT в рубли\n"
+        "/show_deltas – показать текущие дельты (админ)\n"
         "/help – эта справка\n\n"
         "💡 Примеры:\n"
         "/convert_rub 10000\n"
         "/convert_usdt 500"
     )
 
-# Админ-команды для установки дельт
+# ---------- Админ-команды для изменения дельт ----------
 @dp.message(Command("set_delta_rub_usdt"))
 async def set_delta_rub_usdt(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -209,7 +295,7 @@ async def set_delta_rub_usdt(message: Message):
         return
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_rub_usdt 0.30`")
+        await message.answer("❌ Пример: `/set_delta_rub_usdt 0.30`", parse_mode="Markdown")
         return
     try:
         val = float(args[1].replace(',', '.'))
@@ -226,7 +312,7 @@ async def set_delta_usdt_cny(message: Message):
         return
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_usdt_cny 0.10`")
+        await message.answer("❌ Пример: `/set_delta_usdt_cny 0.10`", parse_mode="Markdown")
         return
     try:
         val = float(args[1].replace(',', '.'))
@@ -243,7 +329,7 @@ async def set_delta_usdt_rub(message: Message):
         return
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("❌ Пример: `/set_delta_usdt_rub 0.20`")
+        await message.answer("❌ Пример: `/set_delta_usdt_rub 0.20`", parse_mode="Markdown")
         return
     try:
         val = float(args[1].replace(',', '.'))
@@ -253,7 +339,7 @@ async def set_delta_usdt_rub(message: Message):
     except:
         await message.answer("❌ Введите корректное число.")
 
-# Обработка обычных текстовых сообщений (для ввода суммы)
+# ---------- Обработка текстовых сообщений ----------
 @dp.message(F.text)
 async def handle_text(message: Message):
     user_id = message.from_user.id
@@ -283,37 +369,45 @@ async def handle_text(message: Message):
 
     await message.answer("Используйте команды из меню или отправьте /help")
 
-# Вспомогательные функции с анимацией
+# ---------- Конвертация с улучшенной анимацией ----------
 async def process_rub_conversion(message: Message, amount_rub):
     loading = await message.answer("⏳ Конвертирую...")
+    await asyncio.sleep(0.3)
+    await loading.edit_text("🔄 Считаю...")
     result = convert_rub_to_usdt_cny(amount_rub)
     if result is None:
         await loading.edit_text("❌ Не удалось получить курс. Попробуйте позже.")
         return
+    await asyncio.sleep(0.3)
     now = datetime.now().strftime("%d.%m.%Y, %H:%M")
     await loading.edit_text(
         f"💱 **Конвертация {result['amount_rub']:,.0f} ₽**\n"
         f"🕐 {now}\n\n"
         f"🪙 Получите: **{result['usdt']:,.2f} USDT**\n"
-        f"🇨🇳 В юанях: **{result['cny']:,.2f} CNY**",
+        f"🇨🇳 В юанях: **{result['cny']:,.2f} CNY**\n\n"
+        f"✅ Готово!",
         parse_mode="Markdown"
     )
 
 async def process_usdt_conversion(message: Message, amount_usdt):
     loading = await message.answer("⏳ Конвертирую...")
+    await asyncio.sleep(0.3)
+    await loading.edit_text("🔄 Считаю...")
     result = convert_usdt_to_rub(amount_usdt)
     if result is None:
         await loading.edit_text("❌ Не удалось получить курс. Попробуйте позже.")
         return
+    await asyncio.sleep(0.3)
     now = datetime.now().strftime("%d.%m.%Y, %H:%M")
     await loading.edit_text(
         f"💰 **Конвертация {result['amount_usdt']:,.2f} USDT**\n"
         f"🕐 {now}\n\n"
-        f"🇷🇺 Получите: **{result['rub']:,.2f} ₽**",
+        f"🇷🇺 Получите: **{result['rub']:,.2f} ₽**\n\n"
+        f"✅ Готово!",
         parse_mode="Markdown"
     )
 
-# Запуск
+# ---------- Запуск ----------
 async def main():
     await set_default_commands()
     await dp.start_polling(bot, skip_updates=True)
