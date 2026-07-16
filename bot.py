@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,21 @@ from aiogram import F
 BOT_TOKEN = "8221747840:AAHWUVECN07_ldY8aLutcr9qLnsKtRt45Uc"
 ADMIN_ID = 8891085561
 
-DELTA_FILE = "deltas.json"
+# ---------- Чтение дельт из переменных окружения (с запасными значениями) ----------
+def get_delta_from_env(key, default):
+    try:
+        val = os.environ.get(key)
+        if val is not None:
+            return float(val)
+    except:
+        pass
+    return default
+
+deltas = {
+    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
+    "delta_usdt_to_cny": get_delta_from_env("DELTA_USDT_CNY", 0.10),
+    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
+}
 
 # ---------- Кеш для курсов ----------
 _cache = {
@@ -23,32 +38,7 @@ _cache = {
     "timestamp": None,
     "last_successful_cny": None
 }
-CACHE_TTL = 60  # секунд
-
-# ---------- Работа с дельтами ----------
-def load_deltas():
-    default = {
-        "delta_rub_to_usdt": 0.30,
-        "delta_usdt_to_cny": 0.10,
-        "delta_usdt_to_rub": 0.20
-    }
-    if Path(DELTA_FILE).exists():
-        try:
-            with open(DELTA_FILE, "r") as f:
-                data = json.load(f)
-                for key in default:
-                    if key not in data:
-                        data[key] = default[key]
-                return data
-        except:
-            return default
-    return default
-
-def save_deltas(deltas):
-    with open(DELTA_FILE, "w") as f:
-        json.dump(deltas, f)
-
-deltas = load_deltas()
+CACHE_TTL = 60
 
 # ---------- Отправка ошибки админу ----------
 async def notify_admin_error(error_text):
@@ -89,7 +79,7 @@ def get_usdt_cny_rate(force=False):
         if _cache["usdt_cny"] is not None:
             return _cache["usdt_cny"]
 
-    # 1. Пробуем Bybit (основной источник)
+    # 1. Пробуем Bybit
     try:
         url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTCNY"
         resp = requests.get(url, timeout=10)
@@ -190,10 +180,25 @@ async def start_cmd(message: Message):
         [InlineKeyboardButton(text="💰 USDT → рубли", callback_data="convert_usdt")],
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
     ])
+    # При старте сразу показываем курс
+    rub_rate = get_usdt_rub_rate(force=True)
+    cny_rate = get_usdt_cny_rate(force=True)
+    now = datetime.now().strftime("%d.%m.%Y, %H:%M")
+    course_text = ""
+    if rub_rate is not None:
+        course_text = f"\n📈 **Курс на {now}**\n🇺🇸 USDT/RUB: **{rub_rate:.2f}** ₽"
+        if cny_rate is not None:
+            course_text += f"\n🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
+        else:
+            course_text += "\n🇨🇳 USDT/CNY: ❌"
+    else:
+        course_text = "\n❌ Не удалось получить курс"
+
     await message.answer(
-        "👋 Привет! Я бот для конвертации криптовалют.\n\n"
-        "Используй кнопки ниже или команды из меню.",
-        reply_markup=keyboard
+        f"👋 Привет! Я бот для конвертации криптовалют.\n\n"
+        f"Используй кнопки ниже или команды из меню.{course_text}",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
 
 @dp.callback_query(F.data == "course")
@@ -291,7 +296,7 @@ async def help_cmd(message: Message):
         "/convert_usdt 500"
     )
 
-# ---------- Админ-команды для изменения дельт ----------
+# ---------- Админ-команды для изменения дельт (они теперь тоже обновляют переменные окружения? Но мы не можем менять их через код, поэтому оставим как есть, но они будут менять значение в памяти, а при перезапуске вернутся к значениям из окружения. Чтобы изменения сохранялись, нужно либо хранить в базе, либо обновлять переменные через API Render. Для простоты пока оставим так: команды изменяют дельты в памяти, но при перезапуске они сбросятся к значениям из окружения. Если хотите постоянного изменения, лучше использовать файл, но тогда проблема сброса. Пока предлагаю так: пользователь меняет дельты командами, они действуют до перезапуска, а после перезапуска берутся из окружения. ----------
 @dp.message(Command("set_delta_rub_usdt"))
 async def set_delta_rub_usdt(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -304,8 +309,7 @@ async def set_delta_rub_usdt(message: Message):
     try:
         val = float(args[1].replace(',', '.'))
         deltas["delta_rub_to_usdt"] = val
-        save_deltas(deltas)
-        await message.answer(f"✅ Дельта RUB→USDT установлена: {val:.2f} ₽")
+        await message.answer(f"✅ Дельта RUB→USDT установлена на **{val:.2f}** ₽ (до перезапуска)")
     except:
         await message.answer("❌ Введите корректное число.")
 
@@ -321,8 +325,7 @@ async def set_delta_usdt_cny(message: Message):
     try:
         val = float(args[1].replace(',', '.'))
         deltas["delta_usdt_to_cny"] = val
-        save_deltas(deltas)
-        await message.answer(f"✅ Дельта USDT→CNY установлена: {val:.2f} ¥")
+        await message.answer(f"✅ Дельта USDT→CNY установлена на **{val:.2f}** ¥ (до перезапуска)")
     except:
         await message.answer("❌ Введите корректное число.")
 
@@ -338,8 +341,7 @@ async def set_delta_usdt_rub(message: Message):
     try:
         val = float(args[1].replace(',', '.'))
         deltas["delta_usdt_to_rub"] = val
-        save_deltas(deltas)
-        await message.answer(f"✅ Дельта USDT→RUB установлена: {val:.2f} ₽")
+        await message.answer(f"✅ Дельта USDT→RUB установлена на **{val:.2f}** ₽ (до перезапуска)")
     except:
         await message.answer("❌ Введите корректное число.")
 
