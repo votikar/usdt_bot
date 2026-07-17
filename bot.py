@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта и фиксированный курс ----------
+# ---------- Дельта ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -29,20 +29,10 @@ def get_delta_from_env(key, default):
 delta_rub_to_usdt = get_delta_from_env("DELTA_RUB_USDT", 0.30)
 delta_cny_rub = get_delta_from_env("DELTA_CNY_RUB", 0.00)
 
-fixed_usd_cny = os.environ.get("FIXED_USD_CNY")
-if fixed_usd_cny is not None:
-    try:
-        fixed_usd_cny = float(fixed_usd_cny)
-    except:
-        fixed_usd_cny = None
-
 # ---------- Кеш ----------
 _cache = {
     "usdt_rub": None,
-    "usd_rub": None,
-    "usd_cny": None,
-    "cny_rub_direct": None,
-    "last_successful_cny_rub": None,
+    "cny_rub": None,
     "timestamp": None,
 }
 CACHE_TTL = 30
@@ -77,104 +67,24 @@ def get_usdt_rub_rate(force=False):
         logger.error(f"Rapira USDT/RUB error: {e}")
         return None
 
-def get_usd_rub_rate(force=False):
+def get_cny_rub_rate(force=False):
+    """Прямой курс CNY/RUB с ЦБ РФ (с дельтой)"""
     now = datetime.now()
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
-        if _cache["usd_rub"] is not None:
-            return _cache["usd_rub"]
-    url = "https://www.cbr-xml-daily.ru/daily_json.js"
-    try:
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        rate = data["Valute"]["USD"]["Value"]
-        _cache["usd_rub"] = rate
-        _cache["timestamp"] = now
-        logger.info(f"USD/RUB from CBR: {rate}")
-        return rate
-    except Exception as e:
-        logger.error(f"CBR USD/RUB error: {e}")
-        return None
-
-def get_usd_cny_rate(force=False):
-    if fixed_usd_cny is not None:
-        return fixed_usd_cny
-    now = datetime.now()
-    if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
-        if _cache["usd_cny"] is not None:
-            return _cache["usd_cny"]
-    # 1) Bybit
-    try:
-        url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDCNY"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("retCode") == 0:
-                rate = float(data["result"]["list"][0]["lastPrice"])
-                _cache["usd_cny"] = rate
-                _cache["timestamp"] = now
-                logger.info(f"USD/CNY from Bybit: {rate}")
-                return rate
-    except Exception as e:
-        logger.warning(f"Bybit USD/CNY failed: {e}")
-    # 2) CoinGecko
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies=cny"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            rate = float(resp.json()["usd"]["cny"])
-            _cache["usd_cny"] = rate
-            _cache["timestamp"] = now
-            logger.info(f"USD/CNY from CoinGecko: {rate}")
-            return rate
-    except Exception as e:
-        logger.warning(f"CoinGecko USD/CNY failed: {e}")
-    # 3) Binance
-    try:
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=USDCNY"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            rate = float(data["price"])
-            _cache["usd_cny"] = rate
-            _cache["timestamp"] = now
-            logger.info(f"USD/CNY from Binance: {rate}")
-            return rate
-    except Exception as e:
-        logger.warning(f"Binance USD/CNY failed: {e}")
-    # 4) exchangerate.host
-    try:
-        url = "https://api.exchangerate.host/convert?from=USD&to=CNY"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                rate = float(data["result"])
-                _cache["usd_cny"] = rate
-                _cache["timestamp"] = now
-                logger.info(f"USD/CNY from exchangerate.host: {rate}")
-                return rate
-    except Exception as e:
-        logger.warning(f"exchangerate.host USD/CNY failed: {e}")
-    return None
-
-def get_cny_rub_direct(force=False):
-    now = datetime.now()
-    if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
-        if _cache["cny_rub_direct"] is not None:
-            return _cache["cny_rub_direct"]
+        if _cache["cny_rub"] is not None:
+            return _cache["cny_rub"]
     url = "https://www.cbr-xml-daily.ru/daily_json.js"
     try:
         resp = requests.get(url, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         rate = data["Valute"]["CNY"]["Value"]
-        _cache["cny_rub_direct"] = rate
+        _cache["cny_rub"] = rate
         _cache["timestamp"] = now
-        logger.info(f"CNY/RUB direct from CBR: {rate}")
+        logger.info(f"CNY/RUB from CBR: {rate}")
         return rate
     except Exception as e:
-        logger.error(f"CBR CNY/RUB direct error: {e}")
+        logger.error(f"CBR CNY/RUB error: {e}")
         return None
 
 def get_final_usdt_rub_rate():
@@ -183,33 +93,11 @@ def get_final_usdt_rub_rate():
         return None
     return rate + delta_rub_to_usdt
 
-def get_cny_rub_rate():
-    # Сначала кросс-курс через USD
-    usd_rub = get_usd_rub_rate()
-    usd_cny = get_usd_cny_rate()
-    if usd_rub is not None and usd_cny is not None and usd_cny != 0:
-        rate = (usd_rub / usd_cny) + delta_cny_rub
-        _cache["last_successful_cny_rub"] = rate
-        logger.info(f"CNY/RUB via cross-rate: {rate}")
-        return rate
-    # Запасной вариант: прямой курс с ЦБ
-    direct = get_cny_rub_direct()
-    if direct is not None:
-        rate = direct + delta_cny_rub
-        _cache["last_successful_cny_rub"] = rate
-        logger.info(f"CNY/RUB via direct CBR: {rate}")
-        return rate
-    # Если ничего не работает, возвращаем последний успешный
-    if _cache["last_successful_cny_rub"] is not None:
-        logger.warning("Using cached CNY/RUB rate")
-        return _cache["last_successful_cny_rub"]
-    return None
-
-def get_usd_cny_for_display():
-    rate = get_usd_cny_rate()
+def get_final_cny_rub_rate():
+    rate = get_cny_rub_rate()
     if rate is None:
         return None
-    return rate
+    return rate + delta_cny_rub
 
 # ---------- Клавиатуры ----------
 def main_menu_keyboard():
@@ -218,6 +106,15 @@ def main_menu_keyboard():
          InlineKeyboardButton(text="💳 Продать USDT", callback_data="sell")],
         [InlineKeyboardButton(text="📋 Услуги", callback_data="services"),
          InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")]
+    ])
+
+def convert_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="RUB → USDT", callback_data="conv_RUB_USDT"),
+         InlineKeyboardButton(text="RUB → CNY", callback_data="conv_RUB_CNY")],
+        [InlineKeyboardButton(text="USDT → RUB", callback_data="conv_USDT_RUB"),
+         InlineKeyboardButton(text="CNY → RUB", callback_data="conv_CNY_RUB")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
 def action_keyboard():
@@ -234,16 +131,11 @@ def services_keyboard():
 
 def get_course_text():
     usdt_rub = get_final_usdt_rub_rate()
-    cny_rub = get_cny_rub_rate()
-    usd_cny = get_usd_cny_for_display()
+    cny_rub = get_final_cny_rub_rate()
     if usdt_rub is None:
         return "❌ Не удалось получить курс USDT. Попробуйте позже."
     text = "💰 **Текущие курсы**\n\n"
     text += f"🪙 USDT/RUB: **{usdt_rub:.2f}** ₽\n"
-    if usd_cny is not None:
-        text += f"🇺🇸 USD/CNY: **{usd_cny:.2f}** ¥\n"
-    else:
-        text += "🇺🇸 USD/CNY: ❌\n"
     if cny_rub is not None:
         text += f"🇨🇳 CNY/RUB: **{cny_rub:.2f}** ₽"
     else:
@@ -257,14 +149,31 @@ def convert_rub_to_usdt(amount_rub):
         return None
     return amount_rub / rate
 
+def convert_rub_to_cny(amount_rub):
+    rate = get_final_cny_rub_rate()
+    if rate is None:
+        return None
+    return amount_rub / rate
+
+def convert_usdt_to_rub(amount_usdt):
+    rate = get_final_usdt_rub_rate()
+    if rate is None:
+        return None
+    return amount_usdt * rate
+
+def convert_cny_to_rub(amount_cny):
+    rate = get_final_cny_rub_rate()
+    if rate is None:
+        return None
+    return amount_cny * rate
+
 # ---------- Обработчики ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     text = get_course_text()
     await message.answer(
         f"🏦 Добро пожаловать в обменник!\n\n{text}\n\n"
-        "Введите сумму в рублях (например, 1000) для конвертации в USDT, "
-        "или используйте /convert для справки.",
+        "Для конвертации нажмите кнопку «Конвертировать» ниже.",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
@@ -276,61 +185,60 @@ async def course_cmd(message: Message):
 
 @dp.message(Command("convert"))
 async def convert_cmd(message: Message):
-    args = message.text.split()
-    if len(args) > 1:
-        try:
-            amount = float(args[1].replace(',', '.'))
-            if amount <= 0:
-                raise ValueError
-            result = convert_rub_to_usdt(amount)
-            if result is None:
-                await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
-                return
-            await message.answer(
-                f"💱 **{amount:.2f} ₽ ≈ {result:.4f} USDT**\n"
-                f"(по курсу {get_final_usdt_rub_rate():.2f} ₽ за 1 USDT)",
-                parse_mode="Markdown",
-                reply_markup=main_menu_keyboard()
-            )
-        except:
-            await message.answer("❌ Введите корректное положительное число.\nПример: `/convert 1000`", parse_mode="Markdown")
-    else:
-        await message.answer(
-            "💱 **Конвертация RUB ↔ USDT**\n\n"
-            "Введите сумму в рублях, чтобы узнать, сколько USDT вы получите.\n"
-            "Пример: `/convert 1000`\n\n"
-            "Или просто напишите число (например, `5000`) и я покажу конвертацию.",
-            parse_mode="Markdown"
-        )
+    await message.answer("Выберите направление конвертации:", reply_markup=convert_menu_keyboard())
+
+# ---------- Обработка текстовых сообщений (ввод числа) ----------
+waiting_for_convert = {}
 
 @dp.message(F.text.regexp(r'^\d+([,.]\d+)?$'))
 async def handle_number(message: Message):
-    try:
-        amount = float(message.text.replace(',', '.'))
-        if amount <= 0:
+    user_id = message.from_user.id
+    if user_id in waiting_for_convert:
+        try:
+            amount = float(message.text.replace(',', '.'))
+            if amount <= 0:
+                raise ValueError
+        except:
             await message.answer("❌ Введите положительное число.")
             return
-        result = convert_rub_to_usdt(amount)
-        if result is None:
-            await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
-            return
-        rate = get_final_usdt_rub_rate()
-        await message.answer(
-            f"💱 **{amount:.2f} ₽ ≈ {result:.4f} USDT**\n"
-            f"(по курсу {rate:.2f} ₽ за 1 USDT)",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard()
-        )
-    except:
-        await message.answer("❌ Не удалось распознать число.")
+        conv_type = waiting_for_convert.pop(user_id)
+        result = None
+        if conv_type == "RUB_USDT":
+            result = convert_rub_to_usdt(amount)
+            if result is not None:
+                await message.answer(f"💱 **{amount:.2f} RUB ≈ {result:.4f} USDT**")
+            else:
+                await message.answer("❌ Не удалось получить курс.")
+        elif conv_type == "RUB_CNY":
+            result = convert_rub_to_cny(amount)
+            if result is not None:
+                await message.answer(f"💱 **{amount:.2f} RUB ≈ {result:.4f} CNY**")
+            else:
+                await message.answer("❌ Не удалось получить курс.")
+        elif conv_type == "USDT_RUB":
+            result = convert_usdt_to_rub(amount)
+            if result is not None:
+                await message.answer(f"💱 **{amount:.2f} USDT ≈ {result:.2f} RUB**")
+            else:
+                await message.answer("❌ Не удалось получить курс.")
+        elif conv_type == "CNY_RUB":
+            result = convert_cny_to_rub(amount)
+            if result is not None:
+                await message.answer(f"💱 **{amount:.2f} CNY ≈ {result:.2f} RUB**")
+            else:
+                await message.answer("❌ Не удалось получить курс.")
+        else:
+            await message.answer("❌ Неизвестное направление.")
+        return
+    # Если просто число без ожидания – предлагаем конвертацию
+    await message.answer("Используйте кнопки конвертации, чтобы выбрать направление.")
 
+# ---------- Коллбэки ----------
 @dp.callback_query(F.data == "refresh")
 async def refresh_callback(callback: CallbackQuery):
     await callback.answer("Обновляю курс...")
     get_usdt_rub_rate(force=True)
-    get_usd_rub_rate(force=True)
-    get_usd_cny_rate(force=True)
-    get_cny_rub_direct(force=True)
+    get_cny_rub_rate(force=True)
     text = get_course_text()
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
@@ -382,12 +290,29 @@ async def services_callback(callback: CallbackQuery):
     )
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=services_keyboard())
 
+@dp.callback_query(F.data == "convert")
+async def convert_callback(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Выберите направление конвертации:", reply_markup=convert_menu_keyboard())
+
+@dp.callback_query(F.data.startswith("conv_"))
+async def convert_pair_callback(callback: CallbackQuery):
+    await callback.answer()
+    pair = callback.data.split("_")[1:]
+    if len(pair) != 2:
+        await callback.message.answer("Ошибка выбора пары.")
+        return
+    from_cur, to_cur = pair
+    conv_key = f"{from_cur}_{to_cur}"
+    waiting_for_convert[callback.from_user.id] = conv_key
+    await callback.message.answer(f"💱 Введите сумму в {from_cur}:")
+
 # ---------- Запуск ----------
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
         BotCommand(command="course", description="💰 Текущие курсы"),
-        BotCommand(command="convert", description="💱 Конвертация RUB → USDT")
+        BotCommand(command="convert", description="💱 Конвертация валют")
     ])
     await dp.start_polling(bot, skip_updates=True)
 
