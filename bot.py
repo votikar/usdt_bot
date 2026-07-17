@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта ----------
+# ---------- Дельта (скрыта) ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -74,7 +74,7 @@ def get_usdt_cny_rate(force=False):
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
         if _cache["usdt_cny"] is not None:
             return _cache["usdt_cny"]
-    # Bybit
+    # 1) Bybit
     try:
         url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTCNY"
         resp = requests.get(url, timeout=5)
@@ -88,7 +88,7 @@ def get_usdt_cny_rate(force=False):
                 return rate
     except Exception as e:
         logging.warning(f"Bybit USDT/CNY failed: {e}")
-    # CoinGecko (одна попытка)
+    # 2) CoinGecko (одна попытка)
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
         resp = requests.get(url, timeout=5)
@@ -100,6 +100,7 @@ def get_usdt_cny_rate(force=False):
             return rate
     except Exception as e:
         logging.warning(f"CoinGecko USDT/CNY failed: {e}")
+    # 3) Кеш
     if _cache["last_successful_cny"] is not None:
         return _cache["last_successful_cny"]
     return None
@@ -150,12 +151,21 @@ def get_course_text():
         text += "🇨🇳 USDT/CNY: ❌ (обновите позже)"
     return text
 
+# ---------- Конвертация ----------
+def convert_rub_to_usdt(amount_rub):
+    rate = get_final_usdt_rub_rate()
+    if rate is None:
+        return None
+    return amount_rub / rate
+
 # ---------- Обработчики ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     text = get_course_text()
     await message.answer(
-        f"Добро пожаловать в обменник!\n\n{text}",
+        f"🏦 Добро пожаловать в обменник!\n\n{text}\n\n"
+        "Введите сумму в рублях (например, 1000) для конвертации в USDT, "
+        "или используйте /convert для справки.",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
@@ -165,6 +175,58 @@ async def course_cmd(message: Message):
     text = get_course_text()
     await message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
+@dp.message(Command("convert"))
+async def convert_cmd(message: Message):
+    args = message.text.split()
+    if len(args) > 1:
+        try:
+            amount = float(args[1].replace(',', '.'))
+            if amount <= 0:
+                raise ValueError
+            result = convert_rub_to_usdt(amount)
+            if result is None:
+                await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
+                return
+            await message.answer(
+                f"💱 **{amount:.2f} ₽ ≈ {result:.4f} USDT**\n"
+                f"(по курсу {get_final_usdt_rub_rate():.2f} ₽ за 1 USDT)",
+                parse_mode="Markdown",
+                reply_markup=main_menu_keyboard()
+            )
+        except:
+            await message.answer("❌ Введите корректное положительное число.\nПример: `/convert 1000`", parse_mode="Markdown")
+    else:
+        await message.answer(
+            "💱 **Конвертация RUB ↔ USDT**\n\n"
+            "Введите сумму в рублях, чтобы узнать, сколько USDT вы получите.\n"
+            "Пример: `/convert 1000`\n\n"
+            "Или просто напишите число (например, `5000`) и я покажу конвертацию.",
+            parse_mode="Markdown"
+        )
+
+# ---------- Обработка текстовых сообщений (ввод числа) ----------
+@dp.message(F.text.regexp(r'^\d+([,.]\d+)?$'))
+async def handle_number(message: Message):
+    try:
+        amount = float(message.text.replace(',', '.'))
+        if amount <= 0:
+            await message.answer("❌ Введите положительное число.")
+            return
+        result = convert_rub_to_usdt(amount)
+        if result is None:
+            await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
+            return
+        rate = get_final_usdt_rub_rate()
+        await message.answer(
+            f"💱 **{amount:.2f} ₽ ≈ {result:.4f} USDT**\n"
+            f"(по курсу {rate:.2f} ₽ за 1 USDT)",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard()
+        )
+    except:
+        await message.answer("❌ Не удалось распознать число.")
+
+# ---------- Коллбэки ----------
 @dp.callback_query(F.data == "refresh")
 async def refresh_callback(callback: CallbackQuery):
     await callback.answer("Обновляю курс...")
@@ -209,7 +271,9 @@ async def sell_callback(callback: CallbackQuery):
 async def services_callback(callback: CallbackQuery):
     await callback.answer()
     text = (
-        "📋 **Дополнительные услуги:**\n\n"
+        "📋 **Наши услуги:**\n\n"
+        "• Покупка и продажа USDT (наличные рубли, доллары США)\n"
+        "• Работа с юанями (CNY) – консультации и обмен\n"
         "• Оплата товаров в Китае\n"
         "• Пополнение WeChat и Alipay\n"
         "• Переводы между крупными городами Китая\n"
@@ -223,7 +287,8 @@ async def services_callback(callback: CallbackQuery):
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
-        BotCommand(command="course", description="💰 Текущий курс USDT")
+        BotCommand(command="course", description="💰 Текущий курс USDT"),
+        BotCommand(command="convert", description="💱 Конвертация RUB → USDT")
     ])
     await dp.start_polling(bot, skip_updates=True)
 
