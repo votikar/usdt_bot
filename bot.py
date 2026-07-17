@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта ----------
+# ---------- Дельта и фиксированный курс ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -29,13 +29,20 @@ def get_delta_from_env(key, default):
 delta_rub_to_usdt = get_delta_from_env("DELTA_RUB_USDT", 0.30)
 delta_cny_rub = get_delta_from_env("DELTA_CNY_RUB", 0.00)
 
+fixed_usd_cny = os.environ.get("FIXED_USD_CNY")
+if fixed_usd_cny is not None:
+    try:
+        fixed_usd_cny = float(fixed_usd_cny)
+    except:
+        fixed_usd_cny = None
+
 # ---------- Кеш ----------
 _cache = {
     "usdt_rub": None,
     "usd_rub": None,
     "usd_cny": None,
     "cny_rub_direct": None,
-    "last_successful_cny_rub": None,  # последний успешный курс юаня
+    "last_successful_cny_rub": None,
     "timestamp": None,
 }
 CACHE_TTL = 30
@@ -90,6 +97,8 @@ def get_usd_rub_rate(force=False):
         return None
 
 def get_usd_cny_rate(force=False):
+    if fixed_usd_cny is not None:
+        return fixed_usd_cny
     now = datetime.now()
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
         if _cache["usd_cny"] is not None:
@@ -120,7 +129,7 @@ def get_usd_cny_rate(force=False):
             return rate
     except Exception as e:
         logger.warning(f"CoinGecko USD/CNY failed: {e}")
-    # 3) Binance (кросс-курс через USDT, но у них нет прямой USDCNY, только USDTCNY)
+    # 3) Binance
     try:
         url = "https://api.binance.com/api/v3/ticker/price?symbol=USDCNY"
         resp = requests.get(url, timeout=5)
@@ -133,7 +142,7 @@ def get_usd_cny_rate(force=False):
             return rate
     except Exception as e:
         logger.warning(f"Binance USD/CNY failed: {e}")
-    # 4) exchangerate.host (бесплатный, без ключа)
+    # 4) exchangerate.host
     try:
         url = "https://api.exchangerate.host/convert?from=USD&to=CNY"
         resp = requests.get(url, timeout=5)
@@ -175,7 +184,7 @@ def get_final_usdt_rub_rate():
     return rate + delta_rub_to_usdt
 
 def get_cny_rub_rate():
-    # Сначала пробуем кросс-курс через USD
+    # Сначала кросс-курс через USD
     usd_rub = get_usd_rub_rate()
     usd_cny = get_usd_cny_rate()
     if usd_rub is not None and usd_cny is not None and usd_cny != 0:
@@ -190,20 +199,19 @@ def get_cny_rub_rate():
         _cache["last_successful_cny_rub"] = rate
         logger.info(f"CNY/RUB via direct CBR: {rate}")
         return rate
-    # Если ничего не работает, возвращаем последний успешный курс
+    # Если ничего не работает, возвращаем последний успешный
     if _cache["last_successful_cny_rub"] is not None:
         logger.warning("Using cached CNY/RUB rate")
         return _cache["last_successful_cny_rub"]
     return None
 
-def get_usdt_cny_rate():
-    usdt_rub = get_final_usdt_rub_rate()
-    cny_rub = get_cny_rub_rate()
-    if usdt_rub is None or cny_rub is None or cny_rub == 0:
+def get_usd_cny_for_display():
+    rate = get_usd_cny_rate()
+    if rate is None:
         return None
-    return usdt_rub / cny_rub
+    return rate
 
-# ---------- Клавиатуры (без изменений) ----------
+# ---------- Клавиатуры ----------
 def main_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Купить USDT", callback_data="buy"),
@@ -227,19 +235,19 @@ def services_keyboard():
 def get_course_text():
     usdt_rub = get_final_usdt_rub_rate()
     cny_rub = get_cny_rub_rate()
-    usdt_cny = get_usdt_cny_rate()
+    usd_cny = get_usd_cny_for_display()
     if usdt_rub is None:
         return "❌ Не удалось получить курс USDT. Попробуйте позже."
     text = "💰 **Текущие курсы**\n\n"
     text += f"🪙 USDT/RUB: **{usdt_rub:.2f}** ₽\n"
+    if usd_cny is not None:
+        text += f"🇺🇸 USD/CNY: **{usd_cny:.2f}** ¥\n"
+    else:
+        text += "🇺🇸 USD/CNY: ❌\n"
     if cny_rub is not None:
-        text += f"🇨🇳 CNY/RUB: **{cny_rub:.2f}** ₽\n"
+        text += f"🇨🇳 CNY/RUB: **{cny_rub:.2f}** ₽"
     else:
-        text += "🇨🇳 CNY/RUB: ❌\n"
-    if usdt_cny is not None:
-        text += f"🪙 USDT/CNY: **{usdt_cny:.2f}** ¥"
-    else:
-        text += "🪙 USDT/CNY: ❌ (не хватает данных)"
+        text += "🇨🇳 CNY/RUB: ❌"
     return text
 
 # ---------- Конвертация ----------
