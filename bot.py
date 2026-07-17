@@ -117,18 +117,8 @@ def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Купить USDT", callback_data="buy"),
          InlineKeyboardButton(text="💳 Продать USDT", callback_data="sell")],
-        [InlineKeyboardButton(text="💱 Конвертировать", callback_data="convert"),
-         InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")],
+        [InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")],
         [InlineKeyboardButton(text="📋 Услуги", callback_data="services")]
-    ])
-
-def convert_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="RUB → USDT", callback_data="conv_RUB_USDT"),
-         InlineKeyboardButton(text="RUB → CNY", callback_data="conv_RUB_CNY")],
-        [InlineKeyboardButton(text="USDT → RUB", callback_data="conv_USDT_RUB"),
-         InlineKeyboardButton(text="CNY → RUB", callback_data="conv_CNY_RUB")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
 def contact_button():
@@ -153,9 +143,6 @@ def course_text():
     text += f"🇨🇳 CNY/RUB: **{cny:.2f}** ₽" if cny is not None else "🇨🇳 CNY/RUB: ❌"
     return text
 
-# ---------- Словарь для ожидания ----------
-waiting = {}
-
 # ---------- Обработчики команд ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
@@ -170,9 +157,60 @@ async def course_cmd(message: Message):
     text = course_text()
     await message.answer(text, parse_mode="Markdown", reply_markup=contact_button())
 
-@dp.message(Command("convert"))
-async def convert_cmd(message: Message):
-    await message.answer("Выберите направление:", reply_markup=convert_menu())
+@dp.message(Command("convert_rub"))
+async def convert_rub_cmd(message: Message):
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ Укажите сумму в рублях.\nПример: `/convert_rub 1000`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        amount = float(args[1].replace(',', '.'))
+        if amount <= 0:
+            raise ValueError
+    except:
+        await message.answer("❌ Введите корректное положительное число.")
+        return
+    usdt = rub_to_usdt(amount)
+    cny = rub_to_cny(amount)
+    if usdt is None or cny is None:
+        await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
+        return
+    await message.answer(
+        f"💱 **{amount:.2f} RUB**\n"
+        f"🪙 **{usdt:.4f} USDT**\n"
+        f"🇨🇳 **{cny:.4f} CNY**",
+        parse_mode="Markdown",
+        reply_markup=contact_button()
+    )
+
+@dp.message(Command("convert_usdt"))
+async def convert_usdt_cmd(message: Message):
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ Укажите сумму в USDT.\nПример: `/convert_usdt 100`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        amount = float(args[1].replace(',', '.'))
+        if amount <= 0:
+            raise ValueError
+    except:
+        await message.answer("❌ Введите корректное положительное число.")
+        return
+    rub = usdt_to_rub(amount)
+    if rub is None:
+        await message.answer("❌ Не удалось получить курс. Попробуйте позже.")
+        return
+    await message.answer(
+        f"💱 **{amount:.2f} USDT ≈ {rub:.2f} RUB**",
+        parse_mode="Markdown",
+        reply_markup=contact_button()
+    )
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
@@ -180,69 +218,14 @@ async def help_cmd(message: Message):
         "📋 **Доступные команды:**\n"
         "/start – Главное меню\n"
         "/course – Показать курсы\n"
-        "/convert – Открыть конвертацию\n"
+        "/convert_rub [сумма] – Конвертировать рубли в USDT и CNY\n"
+        "/convert_usdt [сумма] – Конвертировать USDT в рубли\n"
         "/help – Эта справка\n\n"
         "Для связи со мной используйте кнопку «Связаться» под любым сообщением."
     )
 
-# ---------- Обработка чисел ----------
-@dp.message(F.text.regexp(r'^\d+([,.]\d+)?$'))
-async def handle_number(message: Message):
-    user_id = message.from_user.id
-    if user_id not in waiting:
-        await message.answer("Сначала выберите направление конвертации через меню.")
-        return
-    try:
-        amount = float(message.text.replace(',', '.'))
-        if amount <= 0:
-            raise ValueError
-    except:
-        await message.answer("❌ Введите положительное число.")
-        return
-    conv_type = waiting.pop(user_id)
-    result = None
-    if conv_type == "RUB_USDT":
-        result = rub_to_usdt(amount)
-        if result is not None:
-            await message.answer(
-                f"💱 **{amount:.2f} RUB ≈ {result:.4f} USDT**",
-                parse_mode="Markdown",
-                reply_markup=contact_button()
-            )
-        else:
-            await message.answer("❌ Не удалось получить курс.")
-    elif conv_type == "RUB_CNY":
-        result = rub_to_cny(amount)
-        if result is not None:
-            await message.answer(
-                f"💱 **{amount:.2f} RUB ≈ {result:.4f} CNY**",
-                parse_mode="Markdown",
-                reply_markup=contact_button()
-            )
-        else:
-            await message.answer("❌ Не удалось получить курс.")
-    elif conv_type == "USDT_RUB":
-        result = usdt_to_rub(amount)
-        if result is not None:
-            await message.answer(
-                f"💱 **{amount:.2f} USDT ≈ {result:.2f} RUB**",
-                parse_mode="Markdown",
-                reply_markup=contact_button()
-            )
-        else:
-            await message.answer("❌ Не удалось получить курс.")
-    elif conv_type == "CNY_RUB":
-        result = cny_to_rub(amount)
-        if result is not None:
-            await message.answer(
-                f"💱 **{amount:.2f} CNY ≈ {result:.2f} RUB**",
-                parse_mode="Markdown",
-                reply_markup=contact_button()
-            )
-        else:
-            await message.answer("❌ Не удалось получить курс.")
-    else:
-        await message.answer("❌ Неизвестное направление.")
+# ---------- Обработка чисел (для кнопочной конвертации, если понадобится) ----------
+# Можно оставить пустым или убрать – теперь всё делают команды.
 
 # ---------- Колбэки ----------
 @dp.callback_query(F.data == "refresh")
@@ -306,29 +289,13 @@ async def services_cb(callback: CallbackQuery):
     )
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=services_menu())
 
-@dp.callback_query(F.data == "convert")
-async def convert_cb(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_text("Выберите направление:", reply_markup=convert_menu())
-
-@dp.callback_query(F.data.startswith("conv_"))
-async def conv_choice_cb(callback: CallbackQuery):
-    await callback.answer()
-    pair = callback.data.split("_")[1:]
-    if len(pair) != 2:
-        await callback.message.answer("Ошибка.")
-        return
-    from_cur, to_cur = pair
-    key = f"{from_cur}_{to_cur}"
-    waiting[callback.from_user.id] = key
-    await callback.message.answer(f"Введите сумму в {from_cur}:")
-
 # ---------- Запуск ----------
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
         BotCommand(command="course", description="💰 Текущие курсы"),
-        BotCommand(command="convert", description="💱 Конвертация валют"),
+        BotCommand(command="convert_rub", description="💱 Рубли → USDT/CNY"),
+        BotCommand(command="convert_usdt", description="💱 USDT → рубли"),
         BotCommand(command="help", description="❓ Помощь")
     ])
     await dp.start_polling(bot, skip_updates=True)
