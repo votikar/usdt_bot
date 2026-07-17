@@ -44,6 +44,10 @@ CACHE_TTL = 60
 
 logging.basicConfig(level=logging.INFO)
 
+# ---------- Инициализация бота ----------
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
 # ---------- Получение курсов ----------
 def get_usdt_rub_rate(force=False):
     now = datetime.now()
@@ -131,8 +135,7 @@ def main_menu_keyboard():
          InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")]
     ])
 
-def action_keyboard(action_type):
-    # action_type: 'buy' или 'sell'
+def action_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Продолжить", url="https://t.me/Hans77888")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
@@ -198,7 +201,7 @@ async def buy_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard("buy"))
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "sell")
 async def sell_callback(callback: CallbackQuery):
@@ -211,7 +214,7 @@ async def sell_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard("sell"))
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "services")
 async def services_callback(callback: CallbackQuery):
