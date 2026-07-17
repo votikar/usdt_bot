@@ -3,7 +3,6 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Optional
 
 import requests
 from aiogram import Bot, Dispatcher, types
@@ -17,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта (скрыта от клиента) ----------
+# ---------- Дельта ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -33,18 +32,18 @@ deltas = {
     "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
 }
 
-# ---------- Кеш курсов ----------
+# ---------- Кеш ----------
 _cache = {
     "usdt_rub": None,
     "usdt_cny": None,
     "timestamp": None,
     "last_successful_cny": None
 }
-CACHE_TTL = 60
+CACHE_TTL = 30
 
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Инициализация бота ----------
+# ---------- Бот ----------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -54,10 +53,9 @@ def get_usdt_rub_rate(force=False):
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
         if _cache["usdt_rub"] is not None:
             return _cache["usdt_rub"]
-
     url = "https://api.rapira.net/open/market/rates"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         for item in data.get("data", []):
@@ -76,11 +74,10 @@ def get_usdt_cny_rate(force=False):
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
         if _cache["usdt_cny"] is not None:
             return _cache["usdt_cny"]
-
     # Bybit
     try:
         url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTCNY"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("retCode") == 0:
@@ -91,25 +88,18 @@ def get_usdt_cny_rate(force=False):
                 return rate
     except Exception as e:
         logging.warning(f"Bybit USDT/CNY failed: {e}")
-
-    # CoinGecko
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
-    for attempt in range(3):
-        try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 429:
-                time.sleep(3)
-                continue
-            resp.raise_for_status()
+    # CoinGecko (одна попытка)
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
             rate = float(resp.json()["tether"]["cny"])
             _cache["usdt_cny"] = rate
             _cache["last_successful_cny"] = rate
             _cache["timestamp"] = now
             return rate
-        except Exception as e:
-            logging.warning(f"CoinGecko attempt {attempt+1} failed: {e}")
-            time.sleep(2)
-
+    except Exception as e:
+        logging.warning(f"CoinGecko USDT/CNY failed: {e}")
     if _cache["last_successful_cny"] is not None:
         return _cache["last_successful_cny"]
     return None
@@ -147,7 +137,7 @@ def services_keyboard():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
-def course_text():
+def get_course_text():
     rub_rate = get_final_usdt_rub_rate()
     cny_rate = get_final_usdt_cny_rate()
     if rub_rate is None:
@@ -157,37 +147,36 @@ def course_text():
     if cny_rate is not None:
         text += f"🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
     else:
-        text += "🇨🇳 USDT/CNY: ❌"
+        text += "🇨🇳 USDT/CNY: ❌ (обновите позже)"
     return text
 
 # ---------- Обработчики ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
+    text = get_course_text()
     await message.answer(
-        "💰 Добро пожаловать в обменник!\n\n"
-        "Я предлагаю актуальный курс USDT к рублю и юаню.\n"
-        "Курс обновляется в реальном времени.\n\n"
-        "Для сделки (покупка или продажа) выберите соответствующую кнопку ниже.",
+        f"Добро пожаловать в обменник!\n\n{text}",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
 
 @dp.message(Command("course"))
 async def course_cmd(message: Message):
-    text = course_text()
+    text = get_course_text()
     await message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-# ---------- Коллбэки ----------
 @dp.callback_query(F.data == "refresh")
 async def refresh_callback(callback: CallbackQuery):
-    await callback.answer("Курс обновлён")
-    text = course_text()
+    await callback.answer("Обновляю курс...")
+    get_usdt_rub_rate(force=True)
+    get_usdt_cny_rate(force=True)
+    text = get_course_text()
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 @dp.callback_query(F.data == "back_to_course")
 async def back_to_course_callback(callback: CallbackQuery):
     await callback.answer()
-    text = course_text()
+    text = get_course_text()
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 @dp.callback_query(F.data == "buy")
