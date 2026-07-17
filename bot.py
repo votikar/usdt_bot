@@ -131,10 +131,10 @@ def convert_menu():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
-def action_back():
+def contact_button():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Продолжить", url="https://t.me/Hans77888")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
+        [InlineKeyboardButton(text="📩 Связаться со мной", url="https://t.me/Hans77888")],
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_course")]
     ])
 
 def services_menu():
@@ -147,7 +147,7 @@ def course_text():
     usdt = get_final_usdt_rub()
     cny = get_final_cny_rub()
     if usdt is None:
-        return "❌ Не удалось получить курс USDT."
+        return "❌ Не удалось получить курс USDT. Попробуйте позже."
     text = "💰 **Текущие курсы**\n\n"
     text += f"🪙 USDT/RUB: **{usdt:.2f}** ₽\n"
     text += f"🇨🇳 CNY/RUB: **{cny:.2f}** ₽" if cny is not None else "🇨🇳 CNY/RUB: ❌"
@@ -156,7 +156,7 @@ def course_text():
 # ---------- Словарь для ожидания ----------
 waiting = {}
 
-# ---------- Обработчики ----------
+# ---------- Обработчики команд ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
@@ -167,11 +167,23 @@ async def start_cmd(message: Message):
 
 @dp.message(Command("course"))
 async def course_cmd(message: Message):
-    await message.answer(course_text(), parse_mode="Markdown", reply_markup=main_menu())
+    text = course_text()
+    await message.answer(text, parse_mode="Markdown", reply_markup=contact_button())
 
 @dp.message(Command("convert"))
 async def convert_cmd(message: Message):
     await message.answer("Выберите направление:", reply_markup=convert_menu())
+
+@dp.message(Command("help"))
+async def help_cmd(message: Message):
+    await message.answer(
+        "📋 **Доступные команды:**\n"
+        "/start – Главное меню\n"
+        "/course – Показать курсы\n"
+        "/convert – Открыть конвертацию\n"
+        "/help – Эта справка\n\n"
+        "Для связи со мной используйте кнопку «Связаться» под любым сообщением."
+    )
 
 # ---------- Обработка чисел ----------
 @dp.message(F.text.regexp(r'^\d+([,.]\d+)?$'))
@@ -192,25 +204,41 @@ async def handle_number(message: Message):
     if conv_type == "RUB_USDT":
         result = rub_to_usdt(amount)
         if result is not None:
-            await message.answer(f"💱 **{amount:.2f} RUB ≈ {result:.4f} USDT**")
+            await message.answer(
+                f"💱 **{amount:.2f} RUB ≈ {result:.4f} USDT**",
+                parse_mode="Markdown",
+                reply_markup=contact_button()
+            )
         else:
             await message.answer("❌ Не удалось получить курс.")
     elif conv_type == "RUB_CNY":
         result = rub_to_cny(amount)
         if result is not None:
-            await message.answer(f"💱 **{amount:.2f} RUB ≈ {result:.4f} CNY**")
+            await message.answer(
+                f"💱 **{amount:.2f} RUB ≈ {result:.4f} CNY**",
+                parse_mode="Markdown",
+                reply_markup=contact_button()
+            )
         else:
             await message.answer("❌ Не удалось получить курс.")
     elif conv_type == "USDT_RUB":
         result = usdt_to_rub(amount)
         if result is not None:
-            await message.answer(f"💱 **{amount:.2f} USDT ≈ {result:.2f} RUB**")
+            await message.answer(
+                f"💱 **{amount:.2f} USDT ≈ {result:.2f} RUB**",
+                parse_mode="Markdown",
+                reply_markup=contact_button()
+            )
         else:
             await message.answer("❌ Не удалось получить курс.")
     elif conv_type == "CNY_RUB":
         result = cny_to_rub(amount)
         if result is not None:
-            await message.answer(f"💱 **{amount:.2f} CNY ≈ {result:.2f} RUB**")
+            await message.answer(
+                f"💱 **{amount:.2f} CNY ≈ {result:.2f} RUB**",
+                parse_mode="Markdown",
+                reply_markup=contact_button()
+            )
         else:
             await message.answer("❌ Не удалось получить курс.")
     else:
@@ -222,12 +250,20 @@ async def refresh_cb(callback: CallbackQuery):
     await callback.answer("Обновляю...")
     get_usdt_rub_rate(force=True)
     get_cny_rub_rate(force=True)
-    await callback.message.edit_text(course_text(), parse_mode="Markdown", reply_markup=main_menu())
+    await callback.message.edit_text(
+        course_text(),
+        parse_mode="Markdown",
+        reply_markup=contact_button()
+    )
 
 @dp.callback_query(F.data == "back_to_course")
 async def back_cb(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text(course_text(), parse_mode="Markdown", reply_markup=main_menu())
+    await callback.message.edit_text(
+        course_text(),
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
 
 @dp.callback_query(F.data == "buy")
 async def buy_cb(callback: CallbackQuery):
@@ -240,7 +276,7 @@ async def buy_cb(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_back())
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_button())
 
 @dp.callback_query(F.data == "sell")
 async def sell_cb(callback: CallbackQuery):
@@ -253,7 +289,7 @@ async def sell_cb(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_back())
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_button())
 
 @dp.callback_query(F.data == "services")
 async def services_cb(callback: CallbackQuery):
@@ -291,8 +327,9 @@ async def conv_choice_cb(callback: CallbackQuery):
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
-        BotCommand(command="course", description="💰 Курсы"),
-        BotCommand(command="convert", description="💱 Конвертация")
+        BotCommand(command="course", description="💰 Текущие курсы"),
+        BotCommand(command="convert", description="💱 Конвертация валют"),
+        BotCommand(command="help", description="❓ Помощь")
     ])
     await dp.start_polling(bot, skip_updates=True)
 
