@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта (скрыта) ----------
+# ---------- Дельта ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -26,18 +26,15 @@ def get_delta_from_env(key, default):
         pass
     return default
 
-deltas = {
-    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
-    "delta_usdt_to_cny": get_delta_from_env("DELTA_USDT_CNY", 0.10),
-    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
-}
+delta_rub_to_usdt = get_delta_from_env("DELTA_RUB_USDT", 0.30)   # для USDT/RUB
+delta_cny_rub = get_delta_from_env("DELTA_CNY_RUB", 0.00)       # для CNY/RUB (если хотите наценку на юань)
 
 # ---------- Кеш ----------
 _cache = {
     "usdt_rub": None,
-    "usdt_cny": None,
+    "usd_rub": None,
+    "usd_cny": None,
     "timestamp": None,
-    "last_successful_cny": None
 }
 CACHE_TTL = 30
 
@@ -69,53 +66,78 @@ def get_usdt_rub_rate(force=False):
         logging.error(f"Rapira error: {e}")
         return None
 
-def get_usdt_cny_rate(force=False):
+def get_usd_rub_rate(force=False):
+    """Курс USD/RUB с ЦБ РФ"""
     now = datetime.now()
     if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
-        if _cache["usdt_cny"] is not None:
-            return _cache["usdt_cny"]
+        if _cache["usd_rub"] is not None:
+            return _cache["usd_rub"]
+    url = "https://www.cbr-xml-daily.ru/daily_json.js"
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        rate = data["Valute"]["USD"]["Value"]
+        _cache["usd_rub"] = rate
+        _cache["timestamp"] = now
+        return rate
+    except Exception as e:
+        logging.error(f"ЦБ РФ USD/RUB error: {e}")
+        return None
+
+def get_usd_cny_rate(force=False):
+    """Курс USD/CNY с Bybit (или CoinGecko как резерв)"""
+    now = datetime.now()
+    if not force and _cache["timestamp"] is not None and (now - _cache["timestamp"]).seconds < CACHE_TTL:
+        if _cache["usd_cny"] is not None:
+            return _cache["usd_cny"]
     # 1) Bybit
     try:
-        url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTCNY"
+        url = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDCNY"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("retCode") == 0:
                 rate = float(data["result"]["list"][0]["lastPrice"])
-                _cache["usdt_cny"] = rate
-                _cache["last_successful_cny"] = rate
+                _cache["usd_cny"] = rate
                 _cache["timestamp"] = now
                 return rate
     except Exception as e:
-        logging.warning(f"Bybit USDT/CNY failed: {e}")
-    # 2) CoinGecko (одна попытка)
+        logging.warning(f"Bybit USD/CNY failed: {e}")
+    # 2) CoinGecko
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=cny"
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies=cny"
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
-            rate = float(resp.json()["tether"]["cny"])
-            _cache["usdt_cny"] = rate
-            _cache["last_successful_cny"] = rate
+            rate = float(resp.json()["usd"]["cny"])
+            _cache["usd_cny"] = rate
             _cache["timestamp"] = now
             return rate
     except Exception as e:
-        logging.warning(f"CoinGecko USDT/CNY failed: {e}")
-    # 3) Кеш
-    if _cache["last_successful_cny"] is not None:
-        return _cache["last_successful_cny"]
+        logging.warning(f"CoinGecko USD/CNY failed: {e}")
     return None
 
 def get_final_usdt_rub_rate():
     rate = get_usdt_rub_rate()
     if rate is None:
         return None
-    return rate + deltas["delta_rub_to_usdt"]
+    return rate + delta_rub_to_usdt
 
-def get_final_usdt_cny_rate():
-    rate = get_usdt_cny_rate()
-    if rate is None:
+def get_cny_rub_rate():
+    """Вычисляем CNY/RUB = (USD/RUB) / (USD/CNY)"""
+    usd_rub = get_usd_rub_rate()
+    usd_cny = get_usd_cny_rate()
+    if usd_rub is None or usd_cny is None or usd_cny == 0:
         return None
-    return rate + deltas["delta_usdt_to_cny"]
+    return (usd_rub / usd_cny) + delta_cny_rub   # добавляем дельту для юаня
+
+def get_usdt_cny_rate():
+    """Вычисляем USDT/CNY = (USDT/RUB) / (CNY/RUB)"""
+    usdt_rub = get_final_usdt_rub_rate()
+    cny_rub = get_cny_rub_rate()
+    if usdt_rub is None or cny_rub is None or cny_rub == 0:
+        return None
+    return usdt_rub / cny_rub
 
 # ---------- Клавиатуры ----------
 def main_menu_keyboard():
@@ -139,19 +161,24 @@ def services_keyboard():
     ])
 
 def get_course_text():
-    rub_rate = get_final_usdt_rub_rate()
-    cny_rate = get_final_usdt_cny_rate()
-    if rub_rate is None:
-        return "❌ Не удалось получить курс. Попробуйте позже."
-    text = "💰 **Текущий курс USDT**\n\n"
-    text += f"🇺🇸 USDT/RUB: **{rub_rate:.2f}** ₽\n"
-    if cny_rate is not None:
-        text += f"🇨🇳 USDT/CNY: **{cny_rate:.2f}** ¥"
+    usdt_rub = get_final_usdt_rub_rate()
+    cny_rub = get_cny_rub_rate()
+    usdt_cny = get_usdt_cny_rate()
+    if usdt_rub is None:
+        return "❌ Не удалось получить курс USDT. Попробуйте позже."
+    text = "💰 **Текущие курсы**\n\n"
+    text += f"🪙 USDT/RUB: **{usdt_rub:.2f}** ₽\n"
+    if cny_rub is not None:
+        text += f"🇨🇳 CNY/RUB: **{cny_rub:.2f}** ₽\n"
     else:
-        text += "🇨🇳 USDT/CNY: ❌ (обновите позже)"
+        text += "🇨🇳 CNY/RUB: ❌\n"
+    if usdt_cny is not None:
+        text += f"🪙 USDT/CNY: **{usdt_cny:.2f}** ¥"
+    else:
+        text += "🪙 USDT/CNY: ❌ (не хватает данных)"
     return text
 
-# ---------- Конвертация ----------
+# ---------- Конвертация RUB → USDT ----------
 def convert_rub_to_usdt(amount_rub):
     rate = get_final_usdt_rub_rate()
     if rate is None:
@@ -231,7 +258,8 @@ async def handle_number(message: Message):
 async def refresh_callback(callback: CallbackQuery):
     await callback.answer("Обновляю курс...")
     get_usdt_rub_rate(force=True)
-    get_usdt_cny_rate(force=True)
+    get_usd_rub_rate(force=True)
+    get_usd_cny_rate(force=True)
     text = get_course_text()
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
@@ -247,7 +275,7 @@ async def buy_callback(callback: CallbackQuery):
     text = (
         "📩 Вы выбрали **покупку USDT**.\n\n"
         "Условия сделки:\n"
-        "• Оплата наличными (рубли или доллары США)\n"
+        "• Оплата наличными\n"
         "• Сделки проходят в моём офисе\n"
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
@@ -260,7 +288,7 @@ async def sell_callback(callback: CallbackQuery):
     text = (
         "📩 Вы выбрали **продажу USDT**.\n\n"
         "Условия сделки:\n"
-        "• Получение наличных (рубли или доллары США)\n"
+        "• Получение наличных\n"
         "• Сделки проходят в моём офисе\n"
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
@@ -272,7 +300,7 @@ async def services_callback(callback: CallbackQuery):
     await callback.answer()
     text = (
         "📋 **Наши услуги:**\n\n"
-        "• Покупка и продажа USDT (наличные рубли, доллары США)\n"
+        "• Покупка и продажа USDT (наличные)\n"
         "• Работа с юанями (CNY) – консультации и обмен\n"
         "• Оплата товаров в Китае\n"
         "• Пополнение WeChat и Alipay\n"
@@ -287,7 +315,7 @@ async def services_callback(callback: CallbackQuery):
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
-        BotCommand(command="course", description="💰 Текущий курс USDT"),
+        BotCommand(command="course", description="💰 Текущие курсы"),
         BotCommand(command="convert", description="💱 Конвертация RUB → USDT")
     ])
     await dp.start_polling(bot, skip_updates=True)
