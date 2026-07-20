@@ -99,7 +99,7 @@ def get_final_cny_rub():
     rate = get_cny_rub_rate()
     if rate is None:
         return None
-    return rate + deltas["delta_usdt_to_cny"]  # дельта для CNY (если нужна)
+    return rate + deltas["delta_usdt_to_cny"]
 
 # ---------- Конвертация ----------
 def convert_rub_to_usdt(amount):
@@ -120,14 +120,15 @@ def convert_usdt_to_rub(amount):
         return None
     return amount * rate
 
-# ---------- Формирование красивого текста ----------
+# ---------- Формирование текста ----------
 def format_main_menu():
     usdt = get_final_usdt_rub()
     cny = get_final_cny_rub()
-    now = datetime.now().strftime("%H:%M")
+    date = datetime.now().strftime("%d.%m.%Y")
     if usdt is None:
         return "❌ Не удалось получить курс. Попробуйте позже."
     lines = [
+        f"📅 {date}",
         "🏦 **OnlineMena**",
         "━━━━━━━━━━━━━━",
         f"💵 USDT",
@@ -136,7 +137,6 @@ def format_main_menu():
         f"🇨🇳 CNY",
         f"**{cny:.2f}** ₽" if cny is not None else "❌",
         "━━━━━━━━━━━━━━",
-        f"🕒 Обновлено: {now}",
         "",
         "✅ Актуальный биржевой курс",
         "💬 Ответ менеджера: 2–5 минут",
@@ -148,10 +148,11 @@ def format_main_menu():
 def format_course_text():
     usdt = get_final_usdt_rub()
     cny = get_final_cny_rub()
-    now = datetime.now().strftime("%H:%M")
+    date = datetime.now().strftime("%d.%m.%Y")
     if usdt is None:
         return "❌ Не удалось получить курс. Попробуйте позже."
     lines = [
+        f"📅 {date}",
         "📈 **Актуальные курсы**",
         "━━━━━━━━━━━━━━",
         f"💵 USDT",
@@ -160,7 +161,6 @@ def format_course_text():
         f"🇨🇳 CNY",
         f"**{cny:.2f}** ₽" if cny is not None else "❌",
         "━━━━━━━━━━━━━━",
-        f"🕒 Обновлено: {now}",
         "",
         "✅ Актуальный биржевой курс",
         "💬 Ответ менеджера: 2–5 минут"
@@ -168,8 +168,6 @@ def format_course_text():
     return "\n".join(lines)
 
 def format_convert_result(amount_rub, usdt, cny):
-    now = datetime.now().strftime("%H:%M")
-    rate = get_final_usdt_rub()
     lines = [
         "💱 **Результат расчёта**",
         "━━━━━━━━━━━━━━",
@@ -180,13 +178,11 @@ def format_convert_result(amount_rub, usdt, cny):
         f"💵 **{usdt:.4f}** USDT",
         f"🇨🇳 **{cny:.2f}** CNY",
         "━━━━━━━━━━━━━━",
-        f"Курс: **{rate:.2f}** ₽ за 1 USDT",
-        f"🕒 {now}"
+        f"Курс: **{get_final_usdt_rub():.2f}** ₽ за 1 USDT"
     ]
     return "\n".join(lines)
 
 def format_convert_usdt_result(amount_usdt, rub):
-    now = datetime.now().strftime("%H:%M")
     lines = [
         "💱 **Результат расчёта**",
         "━━━━━━━━━━━━━━",
@@ -195,8 +191,7 @@ def format_convert_usdt_result(amount_usdt, rub):
         "━━━━━━━━━━━━━━",
         "Получаете",
         f"**{rub:,.2f}** ₽",
-        "━━━━━━━━━━━━━━",
-        f"🕒 {now}"
+        "━━━━━━━━━━━━━━"
     ]
     return "\n".join(lines)
 
