@@ -27,9 +27,10 @@ def get_delta_from_env(key, default):
     return default
 
 deltas = {
-    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
-    "delta_usdt_to_cny": get_delta_from_env("DELTA_USDT_CNY", 0.10),
-    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
+    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),   # наценка при продаже USDT
+    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),    # скидка при покупке USDT
+    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),         # наценка при продаже CNY
+    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50), # скидка при покупке CNY
 }
 
 # ---------- Кеш курсов ----------
@@ -89,41 +90,52 @@ def get_cny_rub_rate(force=False):
         logger.error(f"CBR error: {e}")
         return None
 
-def get_final_usdt_rub():
+# ---------- Раздельные курсы для операций ----------
+def get_usdt_sell_rate():   # RUB → USDT (вы продаёте USDT)
     rate = get_usdt_rub_rate()
-    if rate is None:
-        return None
-    return rate + deltas["delta_rub_to_usdt"]
+    return rate + deltas["delta_rub_to_usdt"] if rate else None
 
-def get_final_cny_rub():
+def get_usdt_buy_rate():    # USDT → RUB (вы покупаете USDT)
+    rate = get_usdt_rub_rate()
+    return rate - deltas["delta_usdt_to_rub"] if rate else None
+
+def get_cny_sell_rate():    # RUB → CNY (вы продаёте CNY)
     rate = get_cny_rub_rate()
-    if rate is None:
-        return None
-    return rate + deltas["delta_usdt_to_cny"]
+    return rate + deltas["delta_cny_rub"] if rate else None
+
+def get_cny_buy_rate():     # CNY → RUB (вы покупаете CNY)
+    rate = get_cny_rub_rate()
+    return rate - deltas["delta_cny_rub_buy"] if rate else None
 
 # ---------- Конвертация ----------
 def convert_rub_to_usdt(amount):
-    rate = get_final_usdt_rub()
+    rate = get_usdt_sell_rate()
     if rate is None:
         return None
     return amount / rate
 
 def convert_rub_to_cny(amount):
-    rate = get_final_cny_rub()
+    rate = get_cny_sell_rate()
     if rate is None:
         return None
     return amount / rate
 
 def convert_usdt_to_rub(amount):
-    rate = get_final_usdt_rub()
+    rate = get_usdt_buy_rate()
+    if rate is None:
+        return None
+    return amount * rate
+
+def convert_cny_to_rub(amount):
+    rate = get_cny_buy_rate()
     if rate is None:
         return None
     return amount * rate
 
 # ---------- Формирование текста ----------
 def format_main_menu():
-    usdt = get_final_usdt_rub()
-    cny = get_final_cny_rub()
+    usdt = get_usdt_sell_rate()   # показываем курс продажи USDT (клиент видит цену покупки)
+    cny = get_cny_sell_rate()
     date = datetime.now().strftime("%d.%m.%Y")
     if usdt is None:
         return "❌ Не удалось получить курс. Попробуйте позже."
@@ -146,8 +158,8 @@ def format_main_menu():
     return "\n".join(lines)
 
 def format_course_text():
-    usdt = get_final_usdt_rub()
-    cny = get_final_cny_rub()
+    usdt = get_usdt_sell_rate()
+    cny = get_cny_sell_rate()
     date = datetime.now().strftime("%d.%m.%Y")
     if usdt is None:
         return "❌ Не удалось получить курс. Попробуйте позже."
@@ -178,7 +190,8 @@ def format_convert_result(amount_rub, usdt, cny):
         f"💵 **{usdt:.4f}** USDT",
         f"🇨🇳 **{cny:.2f}** CNY",
         "━━━━━━━━━━━━━━",
-        f"Курс: **{get_final_usdt_rub():.2f}** ₽ за 1 USDT"
+        f"Курс USDT: **{get_usdt_sell_rate():.2f}** ₽",
+        f"Курс CNY: **{get_cny_sell_rate():.2f}** ₽" if get_cny_sell_rate() else ""
     ]
     return "\n".join(lines)
 
@@ -191,7 +204,8 @@ def format_convert_usdt_result(amount_usdt, rub):
         "━━━━━━━━━━━━━━",
         "Получаете",
         f"**{rub:,.2f}** ₽",
-        "━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━",
+        f"Курс покупки: **{get_usdt_buy_rate():.2f}** ₽"
     ]
     return "\n".join(lines)
 
@@ -229,6 +243,7 @@ def convert_menu_keyboard():
         [InlineKeyboardButton(text="RUB → USDT", callback_data="conv_RUB_USDT"),
          InlineKeyboardButton(text="RUB → CNY", callback_data="conv_RUB_CNY")],
         [InlineKeyboardButton(text="USDT → RUB", callback_data="conv_USDT_RUB")],
+        [InlineKeyboardButton(text="CNY → RUB", callback_data="conv_CNY_RUB")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
@@ -273,6 +288,21 @@ async def convert_usdt_cmd(message: Message):
         await message.answer("💱 Введите сумму в USDT (например, 100):", reply_markup=contact_keyboard())
         waiting_for_usdt[message.from_user.id] = True
 
+@dp.message(Command("convert_cny"))
+async def convert_cny_cmd(message: Message):
+    args = message.text.split()
+    if len(args) > 1:
+        try:
+            amount = float(args[1].replace(',', '.'))
+            if amount <= 0:
+                raise ValueError
+            await process_cny_conversion(message, amount)
+        except:
+            await message.answer("❌ Введите корректное положительное число.", reply_markup=contact_keyboard())
+    else:
+        await message.answer("💱 Введите сумму в CNY (например, 500):", reply_markup=contact_keyboard())
+        waiting_for_cny[message.from_user.id] = True
+
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
     await message.answer(
@@ -281,6 +311,7 @@ async def help_cmd(message: Message):
         "/course – Показать курсы\n"
         "/convert_rub [сумма] – Конвертировать рубли в USDT и CNY\n"
         "/convert_usdt [сумма] – Конвертировать USDT в рубли\n"
+        "/convert_cny [сумма] – Конвертировать CNY в рубли\n"
         "/help – Эта справка\n\n"
         "Для связи используйте кнопку «Связаться» под любым сообщением.",
         reply_markup=contact_keyboard()
@@ -289,6 +320,7 @@ async def help_cmd(message: Message):
 # ---------- Обработка текстовых сообщений ----------
 waiting_for_rub = {}
 waiting_for_usdt = {}
+waiting_for_cny = {}
 
 @dp.message(F.text.regexp(r'^\d+([,.]\d+)?$'))
 async def handle_number(message: Message):
@@ -313,7 +345,17 @@ async def handle_number(message: Message):
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
         return
-    await message.answer("Используйте кнопки меню или команды /start, /course, /convert_rub, /convert_usdt")
+    if user_id in waiting_for_cny:
+        try:
+            amount = float(message.text.replace(',', '.'))
+            if amount <= 0:
+                raise ValueError
+            del waiting_for_cny[user_id]
+            await process_cny_conversion(message, amount)
+        except:
+            await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
+        return
+    await message.answer("Используйте кнопки меню или команды /start, /course, /convert_rub, /convert_usdt, /convert_cny")
 
 async def process_rub_conversion(message: Message, amount_rub):
     usdt = convert_rub_to_usdt(amount_rub)
@@ -330,6 +372,17 @@ async def process_usdt_conversion(message: Message, amount_usdt):
         await message.answer("❌ Не удалось получить курс. Попробуйте позже.", reply_markup=contact_keyboard())
         return
     text = format_convert_usdt_result(amount_usdt, rub)
+    await message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+
+async def process_cny_conversion(message: Message, amount_cny):
+    rub = convert_cny_to_rub(amount_cny)
+    if rub is None:
+        await message.answer("❌ Не удалось получить курс. Попробуйте позже.", reply_markup=contact_keyboard())
+        return
+    text = f"💱 **Результат расчёта**\n\n"
+    text += f"Вы отдаёте 🇨🇳 **{amount_cny:.2f}** CNY\n"
+    text += f"Получаете **{rub:,.2f}** ₽\n"
+    text += f"Курс покупки: **{get_cny_buy_rate():.2f}** ₽"
     await message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
 
 # ---------- Коллбэки ----------
@@ -367,6 +420,9 @@ async def convert_pair_callback(callback: CallbackQuery):
     elif from_cur == "USDT" and to_cur == "RUB":
         await callback.message.answer("💱 Введите сумму в USDT:", reply_markup=contact_keyboard())
         waiting_for_usdt[callback.from_user.id] = True
+    elif from_cur == "CNY" and to_cur == "RUB":
+        await callback.message.answer("💱 Введите сумму в CNY:", reply_markup=contact_keyboard())
+        waiting_for_cny[callback.from_user.id] = True
     else:
         await callback.message.answer("❌ Неизвестная пара.", reply_markup=contact_keyboard())
 
@@ -433,6 +489,7 @@ async def main():
         BotCommand(command="course", description="📈 Текущие курсы"),
         BotCommand(command="convert_rub", description="💱 Конвертировать рубли → USDT/CNY"),
         BotCommand(command="convert_usdt", description="💱 Конвертировать USDT → рубли"),
+        BotCommand(command="convert_cny", description="💱 Конвертировать CNY → рубли"),
         BotCommand(command="help", description="❓ Помощь")
     ])
     await dp.start_polling(bot, skip_updates=True)
