@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-# ---------- Дельта (скрыта от клиента) ----------
+# ---------- Дельта ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -27,13 +27,13 @@ def get_delta_from_env(key, default):
     return default
 
 deltas = {
-    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),   # наценка при продаже USDT
-    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),    # скидка при покупке USDT
-    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),         # наценка при продаже CNY
-    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50), # скидка при покупке CNY
+    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
+    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
+    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),
+    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),
 }
 
-# ---------- Кеш курсов ----------
+# ---------- Кеш ----------
 _cache = {
     "usdt_rub": None,
     "cny_rub": None,
@@ -48,28 +48,46 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ---------- Получение курсов ----------
+# ---------- Получение USDT/RUB с резервом ----------
 def get_usdt_rub_rate(force=False):
     now = datetime.now()
     if not force and _cache["timestamp"] and (now - _cache["timestamp"]).seconds < CACHE_TTL:
         if _cache["usdt_rub"] is not None:
             return _cache["usdt_rub"]
-    url = "https://api.rapira.net/open/market/rates"
+
+    # 1) Пробуем Rapira
     try:
+        url = "https://api.rapira.net/open/market/rates"
         resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        for item in data.get("data", []):
-            if item.get("symbol") == "USDT/RUB":
-                rate = float(item.get("askPrice", 0))
-                _cache["usdt_rub"] = rate
-                _cache["timestamp"] = now
-                logger.info(f"USDT/RUB: {rate}")
-                return rate
-        return None
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get("data", []):
+                if item.get("symbol") == "USDT/RUB":
+                    rate = float(item.get("askPrice", 0))
+                    _cache["usdt_rub"] = rate
+                    _cache["timestamp"] = now
+                    logger.info(f"USDT/RUB from Rapira: {rate}")
+                    return rate
     except Exception as e:
-        logger.error(f"Rapira error: {e}")
-        return None
+        logger.warning(f"Rapira USDT/RUB failed: {e}")
+
+    # 2) Резерв: Bybit (USDT/RUB нет, но есть USDT/USD и USD/RUB – сложно, используем другой источник)
+    # Используем CoinGecko для USDT/RUB (есть)
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=rub"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            rate = data["tether"]["rub"]
+            _cache["usdt_rub"] = rate
+            _cache["timestamp"] = now
+            logger.info(f"USDT/RUB from CoinGecko: {rate}")
+            return rate
+    except Exception as e:
+        logger.warning(f"CoinGecko USDT/RUB failed: {e}")
+
+    # 3) Резерв: Binance (USDT/RUB нет в споте, но есть на P2P – сложно, пропускаем)
+    return None
 
 def get_cny_rub_rate(force=False):
     now = datetime.now()
@@ -90,64 +108,43 @@ def get_cny_rub_rate(force=False):
         logger.error(f"CBR error: {e}")
         return None
 
-# ---------- Раздельные курсы для операций ----------
-def get_usdt_sell_rate():   # RUB → USDT (вы продаёте USDT)
+# ---------- Курсы для операций ----------
+def get_usdt_sell_rate():   # RUB → USDT (вы продаёте)
     rate = get_usdt_rub_rate()
     return rate + deltas["delta_rub_to_usdt"] if rate else None
 
-def get_usdt_buy_rate():    # USDT → RUB (вы покупаете USDT)
+def get_usdt_buy_rate():    # USDT → RUB (вы покупаете)
     rate = get_usdt_rub_rate()
     return rate - deltas["delta_usdt_to_rub"] if rate else None
 
-def get_cny_sell_rate():    # RUB → CNY (вы продаёте CNY)
+def get_cny_sell_rate():    # RUB → CNY (вы продаёте)
     rate = get_cny_rub_rate()
     return rate + deltas["delta_cny_rub"] if rate else None
 
-def get_cny_buy_rate():     # CNY → RUB (вы покупаете CNY)
+def get_cny_buy_rate():     # CNY → RUB (вы покупаете)
     rate = get_cny_rub_rate()
     return rate - deltas["delta_cny_rub_buy"] if rate else None
 
-# ---------- Конвертация ----------
-def convert_rub_to_usdt(amount):
-    rate = get_usdt_sell_rate()
-    if rate is None:
-        return None
-    return amount / rate
-
-def convert_rub_to_cny(amount):
-    rate = get_cny_sell_rate()
-    if rate is None:
-        return None
-    return amount / rate
-
-def convert_usdt_to_rub(amount):
-    rate = get_usdt_buy_rate()
-    if rate is None:
-        return None
-    return amount * rate
-
-def convert_cny_to_rub(amount):
-    rate = get_cny_buy_rate()
-    if rate is None:
-        return None
-    return amount * rate
-
 # ---------- Формирование текста ----------
 def format_main_menu():
-    usdt = get_usdt_sell_rate()   # показываем курс продажи USDT (клиент видит цену покупки)
+    usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
     date = datetime.now().strftime("%d.%m.%Y")
-    if usdt is None:
-        return "❌ Не удалось получить курс. Попробуйте позже."
     lines = [
         f"📅 {date}",
         "🏦 **OnlineMena**",
         "━━━━━━━━━━━━━━",
-        f"💵 USDT",
-        f"**{usdt:.2f}** ₽",
-        "",
-        f"🇨🇳 CNY",
-        f"**{cny:.2f}** ₽" if cny is not None else "❌",
+    ]
+    if usdt is not None:
+        lines += [f"💵 USDT", f"**{usdt:.2f}** ₽"]
+    else:
+        lines += ["💵 USDT", "⚠️ Временно недоступен"]
+    lines.append("")
+    if cny is not None:
+        lines += [f"🇨🇳 CNY", f"**{cny:.2f}** ₽"]
+    else:
+        lines += ["🇨🇳 CNY", "⚠️ Временно недоступен"]
+    lines += [
         "━━━━━━━━━━━━━━",
         "",
         "✅ Актуальный биржевой курс",
@@ -161,17 +158,21 @@ def format_course_text():
     usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
     date = datetime.now().strftime("%d.%m.%Y")
-    if usdt is None:
-        return "❌ Не удалось получить курс. Попробуйте позже."
     lines = [
         f"📅 {date}",
         "📈 **Актуальные курсы**",
         "━━━━━━━━━━━━━━",
-        f"💵 USDT",
-        f"**{usdt:.2f}** ₽",
-        "",
-        f"🇨🇳 CNY",
-        f"**{cny:.2f}** ₽" if cny is not None else "❌",
+    ]
+    if usdt is not None:
+        lines += [f"💵 USDT", f"**{usdt:.2f}** ₽"]
+    else:
+        lines += ["💵 USDT", "⚠️ Временно недоступен"]
+    lines.append("")
+    if cny is not None:
+        lines += [f"🇨🇳 CNY", f"**{cny:.2f}** ₽"]
+    else:
+        lines += ["🇨🇳 CNY", "⚠️ Временно недоступен"]
+    lines += [
         "━━━━━━━━━━━━━━",
         "",
         "✅ Актуальный биржевой курс",
@@ -187,10 +188,10 @@ def format_convert_result(amount_rub, usdt, cny):
         f"**{amount_rub:,.0f}** ₽",
         "━━━━━━━━━━━━━━",
         "Получаете",
-        f"💵 **{usdt:.4f}** USDT",
-        f"🇨🇳 **{cny:.2f}** CNY",
+        f"💵 **{usdt:.4f}** USDT" if usdt is not None else "💵 USDT: ❌",
+        f"🇨🇳 **{cny:.2f}** CNY" if cny is not None else "🇨🇳 CNY: ❌",
         "━━━━━━━━━━━━━━",
-        f"Курс USDT: **{get_usdt_sell_rate():.2f}** ₽",
+        f"Курс USDT: **{get_usdt_sell_rate():.2f}** ₽" if get_usdt_sell_rate() else "",
         f"Курс CNY: **{get_cny_sell_rate():.2f}** ₽" if get_cny_sell_rate() else ""
     ]
     return "\n".join(lines)
@@ -203,13 +204,13 @@ def format_convert_usdt_result(amount_usdt, rub):
         f"💵 **{amount_usdt:.2f}** USDT",
         "━━━━━━━━━━━━━━",
         "Получаете",
-        f"**{rub:,.2f}** ₽",
+        f"**{rub:,.2f}** ₽" if rub is not None else "❌",
         "━━━━━━━━━━━━━━",
-        f"Курс покупки: **{get_usdt_buy_rate():.2f}** ₽"
+        f"Курс покупки: **{get_usdt_buy_rate():.2f}** ₽" if get_usdt_buy_rate() else ""
     ]
     return "\n".join(lines)
 
-# ---------- Клавиатуры ----------
+# ---------- Клавиатуры (без изменений) ----------
 def main_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💵 Купить", callback_data="buy"),
@@ -317,7 +318,7 @@ async def help_cmd(message: Message):
         reply_markup=contact_keyboard()
     )
 
-# ---------- Обработка текстовых сообщений ----------
+# ---------- Обработка чисел ----------
 waiting_for_rub = {}
 waiting_for_usdt = {}
 waiting_for_cny = {}
@@ -382,26 +383,71 @@ async def process_cny_conversion(message: Message, amount_cny):
     text = f"💱 **Результат расчёта**\n\n"
     text += f"Вы отдаёте 🇨🇳 **{amount_cny:.2f}** CNY\n"
     text += f"Получаете **{rub:,.2f}** ₽\n"
-    text += f"Курс покупки: **{get_cny_buy_rate():.2f}** ₽"
+    text += f"Курс покупки: **{get_cny_buy_rate():.2f}** ₽" if get_cny_buy_rate() else ""
     await message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+
+# ---------- Конвертеры (используют курсы) ----------
+def convert_rub_to_usdt(amount):
+    rate = get_usdt_sell_rate()
+    if rate is None:
+        return None
+    return amount / rate
+
+def convert_rub_to_cny(amount):
+    rate = get_cny_sell_rate()
+    if rate is None:
+        return None
+    return amount / rate
+
+def convert_usdt_to_rub(amount):
+    rate = get_usdt_buy_rate()
+    if rate is None:
+        return None
+    return amount * rate
+
+def convert_cny_to_rub(amount):
+    rate = get_cny_buy_rate()
+    if rate is None:
+        return None
+    return amount * rate
 
 # ---------- Коллбэки ----------
 @dp.callback_query(F.data == "back_to_course")
 async def back_to_course_callback(callback: CallbackQuery):
     await callback.answer()
     text = format_main_menu()
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    # Проверяем, изменилось ли содержимое, чтобы избежать ошибки "message is not modified"
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            # Если не изменилось, просто отвечаем новым сообщением
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 @dp.callback_query(F.data == "course")
 async def course_callback(callback: CallbackQuery):
     await callback.answer()
     text = format_course_text()
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
 
 @dp.callback_query(F.data == "convert")
 async def convert_callback(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
+    try:
+        await callback.message.edit_text("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
 
 @dp.callback_query(F.data.startswith("conv_"))
 async def convert_pair_callback(callback: CallbackQuery):
@@ -437,7 +483,13 @@ async def buy_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "sell")
 async def sell_callback(callback: CallbackQuery):
@@ -450,7 +502,13 @@ async def sell_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "services")
 async def services_callback(callback: CallbackQuery):
@@ -466,7 +524,13 @@ async def services_callback(callback: CallbackQuery):
         "• Консультации по расчётам с Китаем\n\n"
         "Для подробностей напишите мне в личный чат."
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=services_keyboard())
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=services_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=services_keyboard())
 
 @dp.callback_query(F.data == "about")
 async def about_callback(callback: CallbackQuery):
@@ -480,7 +544,13 @@ async def about_callback(callback: CallbackQuery):
         "🏢 Сделки проходят в офисе\n\n"
         "Свяжитесь со мной для сделки:"
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            logger.error(f"Edit error: {e}")
+        else:
+            await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
 
 # ---------- Запуск ----------
 async def main():
