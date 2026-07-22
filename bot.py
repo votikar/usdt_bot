@@ -27,7 +27,7 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logging.warning("Supabase not configured, analytics disabled")
 
-# ---------- Дельта (скрыта от клиента) ----------
+# ---------- Дельта ----------
 def get_delta_from_env(key, default):
     try:
         val = os.environ.get(key)
@@ -40,14 +40,15 @@ def get_delta_from_env(key, default):
 deltas = {
     "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
     "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
-    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),
-    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),
+    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),   # используется как вторая наценка на CNY
+    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),  # скидка при покупке CNY
 }
 
 # ---------- Кеш курсов ----------
 _cache = {
     "usdt_rub": None,
     "cny_rub": None,
+    "usdt_cny": None,
     "timestamp": None,
 }
 CACHE_TTL = 30
@@ -125,27 +126,95 @@ def get_cny_rub_rate(force=False):
         rate = data["Valute"]["CNY"]["Value"]
         _cache["cny_rub"] = rate
         _cache["timestamp"] = now
-        logger.info(f"CNY/RUB: {rate}")
+        logger.info(f"CNY/RUB from CBR: {rate}")
         return rate
     except Exception as e:
         logger.error(f"CBR error: {e}")
         return None
 
-def get_usdt_sell_rate():
+def get_usdt_cny_rate(force=False):
+    """
+    Получает курс USDT/CNY с Frankfurter (Forex).
+    Используется для кросс-курса RUB → CNY.
+    """
+    now = datetime.now()
+    if not force and _cache["timestamp"] and (now - _cache["timestamp"]).seconds < CACHE_TTL:
+        if _cache["usdt_cny"] is not None:
+            return _cache["usdt_cny"]
+    try:
+        url = "https://api.frankfurter.app/latest?from=USD&to=CNY"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            rate = data["rates"]["CNY"]
+            _cache["usdt_cny"] = rate
+            _cache["timestamp"] = now
+            logger.info(f"USDT/CNY from Frankfurter: {rate}")
+            return rate
+    except Exception as e:
+        logger.warning(f"Frankfurter USDT/CNY failed: {e}")
+    # Резерв: exchangerate.host
+    try:
+        url = "https://api.exchangerate.host/convert?from=USD&to=CNY"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                rate = data["result"]
+                _cache["usdt_cny"] = rate
+                _cache["timestamp"] = now
+                logger.info(f"USDT/CNY from exchangerate.host: {rate}")
+                return rate
+    except Exception as e:
+        logger.warning(f"exchangerate.host USDT/CNY failed: {e}")
+    return None
+
+# ---------- Курсы для операций ----------
+def get_usdt_sell_rate():   # RUB → USDT (вы продаёте)
     rate = get_usdt_rub_rate()
     return rate + deltas["delta_rub_to_usdt"] if rate else None
 
-def get_usdt_buy_rate():
+def get_usdt_buy_rate():    # USDT → RUB (вы покупаете)
     rate = get_usdt_rub_rate()
     return rate - deltas["delta_usdt_to_rub"] if rate else None
 
-def get_cny_sell_rate():
-    rate = get_cny_rub_rate()
-    return rate + deltas["delta_cny_rub"] if rate else None
+def get_cny_sell_rate():    # RUB → CNY (вы продаёте CNY) — через кросс-курс с двумя дельтами
+    usdt_rub = get_usdt_rub_rate()
+    usdt_cny = get_usdt_cny_rate()
+    if usdt_rub is not None and usdt_cny is not None and usdt_cny != 0:
+        # Рыночный кросс-курс CNY/RUB = USDT/RUB / USDT/CNY
+        market_cny_rub = usdt_rub / usdt_cny
+        # Применяем обе дельты: сначала на USDT, потом на CNY
+        # Итоговый курс для клиента: (USDT/RUB + delta_usdt) / (USDT/CNY + delta_cny)
+        rate_with_deltas = (usdt_rub + deltas["delta_rub_to_usdt"]) / (usdt_cny + deltas["delta_cny_rub"])
+        logger.info(f"CNY/RUB via cross-rate: market={market_cny_rub:.4f}, with deltas={rate_with_deltas:.4f}")
+        return rate_with_deltas
+    # Если USDT/CNY не получен, падаем на прямой курс ЦБ с дельтой (старый метод)
+    direct = get_cny_rub_rate()
+    if direct is not None:
+        return direct + deltas["delta_cny_rub"]  # добавляем только дельту CNY, но это неполная логика
+    return None
 
-def get_cny_buy_rate():
-    rate = get_cny_rub_rate()
-    return rate - deltas["delta_cny_rub_buy"] if rate else None
+def get_cny_buy_rate():    # CNY → RUB (вы покупаете CNY) — обратный кросс-курс с вычитанием дельт
+    usdt_rub = get_usdt_rub_rate()
+    usdt_cny = get_usdt_cny_rate()
+    if usdt_rub is not None and usdt_cny is not None and usdt_cny != 0:
+        market_cny_rub = usdt_rub / usdt_cny
+        # Вычитаем обе дельты: сначала на USDT, потом на CNY
+        rate_with_deltas = (usdt_rub - deltas["delta_usdt_to_rub"]) / (usdt_cny - deltas["delta_cny_rub_buy"])
+        # Защита от отрицательного курса
+        if rate_with_deltas <= 0:
+            logger.warning("Negative cross-rate for CNY buy, using fallback")
+            direct = get_cny_rub_rate()
+            if direct is not None:
+                return direct - deltas["delta_cny_rub_buy"]
+            return None
+        logger.info(f"CNY/RUB buy via cross-rate: market={market_cny_rub:.4f}, with deltas={rate_with_deltas:.4f}")
+        return rate_with_deltas
+    direct = get_cny_rub_rate()
+    if direct is not None:
+        return direct - deltas["delta_cny_rub_buy"]
+    return None
 
 # ---------- Форматирование текста ----------
 def format_main_menu():
@@ -293,7 +362,6 @@ waiting_for_cny = {}
 async def start_cmd(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username or ""
-    # Получаем источник (параметр start)
     source = None
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("start="):
@@ -381,7 +449,7 @@ async def help_cmd(message: Message):
         reply_markup=contact_keyboard()
     )
 
-# ---------- Админ-команды статистики ----------
+# ---------- Админ-команда статистики ----------
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
     user_id = message.from_user.id
@@ -391,9 +459,8 @@ async def stats_cmd(message: Message):
     if supabase is None:
         await message.answer("❌ Аналитика отключена (Supabase не настроен).")
         return
-    # Парсим период
     args = message.text.split()
-    period = "all"  # по умолчанию всё время
+    period = "all"
     if len(args) > 1:
         if args[1] == "today":
             period = "today"
@@ -404,16 +471,13 @@ async def stats_cmd(message: Message):
     await message.answer(stats, parse_mode="Markdown")
 
 def build_stats(period: str) -> str:
-    # Определяем временной фильтр
     now = datetime.now()
     if period == "today":
         since = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif period == "week":
         since = now - timedelta(days=7)
     else:
-        since = None  # все время
-
-    # Запросы к Supabase
+        since = None
     try:
         query = supabase.table("analytics").select("*")
         if since:
@@ -423,33 +487,22 @@ def build_stats(period: str) -> str:
     except Exception as e:
         logger.error(f"Stats query error: {e}")
         return "❌ Ошибка при получении статистики."
-
     if not rows:
         return "📊 Нет данных за выбранный период."
-
-    # Базовая статистика
     total_users = len(set(r["user_id"] for r in rows))
     total_actions = len(rows)
-
-    # Источники
     sources = {}
     for r in rows:
         src = r.get("source")
         if src:
             sources[src] = sources.get(src, 0) + 1
-
-    # Действия
     actions = {}
     for r in rows:
         a = r["action"]
         actions[a] = actions.get(a, 0) + 1
-
-    # Конверсии
     buy_clicks = actions.get("buy_click", 0)
     sell_clicks = actions.get("sell_click", 0)
     contact_clicks = actions.get("contact_click", 0)
-
-    # Конвертации по валютам
     conv_counts = {"RUB_USDT": 0, "RUB_CNY": 0, "USDT_RUB": 0, "CNY_RUB": 0}
     conv_sums = {"RUB_USDT": 0, "RUB_CNY": 0, "USDT_RUB": 0, "CNY_RUB": 0}
     for r in rows:
@@ -458,9 +511,6 @@ def build_stats(period: str) -> str:
             conv_counts[act] += 1
             if r.get("amount"):
                 conv_sums[act] += float(r["amount"])
-
-    # Среднее время между /start и contact_click
-    # Найдём всех пользователей, у которых есть start и contact_click
     user_times = {}
     for r in rows:
         uid = r["user_id"]
@@ -468,24 +518,20 @@ def build_stats(period: str) -> str:
             user_times.setdefault(uid, {})["start"] = r["created_at"]
         elif r["action"] == "contact_click":
             user_times.setdefault(uid, {})["contact"] = r["created_at"]
-    deltas = []
+    deltas_time = []
     for uid, times in user_times.items():
         if "start" in times and "contact" in times:
             start_dt = datetime.fromisoformat(times["start"].replace("Z", "+00:00"))
             contact_dt = datetime.fromisoformat(times["contact"].replace("Z", "+00:00"))
             diff = (contact_dt - start_dt).total_seconds()
             if diff > 0:
-                deltas.append(diff)
-    avg_time = sum(deltas) / len(deltas) if deltas else None
-
-    # Повторные визиты: пользователи с более чем одним действием
+                deltas_time.append(diff)
+    avg_time = sum(deltas_time) / len(deltas_time) if deltas_time else None
     user_action_counts = {}
     for r in rows:
         uid = r["user_id"]
         user_action_counts[uid] = user_action_counts.get(uid, 0) + 1
     repeat_users = sum(1 for v in user_action_counts.values() if v > 1)
-
-    # Отток: пользователи, у которых есть start, но нет никаких других действий (course, convert, buy, sell, contact)
     users_with_start = set()
     users_with_actions = set()
     for r in rows:
@@ -495,32 +541,25 @@ def build_stats(period: str) -> str:
         elif r["action"] not in ("start", "help"):
             users_with_actions.add(uid)
     churned = users_with_start - users_with_actions
-
-    # Популярные валюты
     popular_currencies = {}
     for r in rows:
         if r.get("currency"):
             popular_currencies[r["currency"]] = popular_currencies.get(r["currency"], 0) + 1
-
-    # Формируем текст
     period_label = {"today": "сегодня", "week": "за неделю", "all": "за всё время"}[period]
     text = f"📊 **Статистика {period_label}**\n\n"
     text += f"👥 Уникальных пользователей: {total_users}\n"
     text += f"📌 Всего действий: {total_actions}\n"
     text += f"🔄 Повторных визитов: {repeat_users}\n"
     text += f"📉 Отток (только /start): {len(churned)}\n\n"
-
     if sources:
         text += "📎 **Источники:**\n"
         for src, count in sources.items():
             text += f"  {src}: {count}\n"
         text += "\n"
-
     text += "📈 **Популярные команды:**\n"
     for act, count in sorted(actions.items(), key=lambda x: -x[1]):
         text += f"  {act}: {count}\n"
     text += "\n"
-
     text += "💱 **Конверсии:**\n"
     text += f"  Купить: {buy_clicks}\n"
     text += f"  Продать: {sell_clicks}\n"
@@ -530,13 +569,11 @@ def build_stats(period: str) -> str:
         seconds = int(avg_time % 60)
         text += f"  Среднее время до связи: {minutes} мин {seconds} сек\n"
     text += "\n"
-
     if popular_currencies:
         text += "🪙 **Популярные валюты:**\n"
         for cur, cnt in popular_currencies.items():
             text += f"  {cur}: {cnt}\n"
         text += "\n"
-
     text += "💰 **Средние суммы конвертации:**\n"
     for cur, cnt in conv_counts.items():
         if cnt > 0:
@@ -548,14 +585,12 @@ def build_stats(period: str) -> str:
             elif cur.startswith("CNY"):
                 text += f"  {cur}: {avg:,.2f} CNY\n"
     text += "\n"
-
     text += "⏱ **Последние действия (3):**\n"
     last_actions = rows[-3:] if len(rows) >= 3 else rows
     for r in reversed(last_actions):
         dt = r["created_at"][:16].replace("T", " ")
         user = r.get("username") or str(r["user_id"])
         text += f"  @{user}: {r['action']} ({dt})\n"
-
     return text
 
 # ---------- Вспомогательные функции конвертации ----------
@@ -814,6 +849,7 @@ async def refresh_callback(callback: CallbackQuery):
     await callback.answer()
     get_usdt_rub_rate(force=True)
     get_cny_rub_rate(force=True)
+    get_usdt_cny_rate(force=True)
     text = format_main_menu()
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
