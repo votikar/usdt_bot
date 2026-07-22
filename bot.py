@@ -167,7 +167,7 @@ def get_cny_buy_rate():
         return direct - deltas["delta_cny_rub_buy"]
     return None
 
-# ---------- Красивое оформление (стиль Team Bot) ----------
+# ---------- Форматирование (красивый стиль) ----------
 def format_main_menu():
     usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
@@ -432,9 +432,10 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_rub[user_id]
             await process_rub_conversion(message, amount)
+            return  # <-- добавил return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
-        return
+            return
     if user_id in waiting_for_usdt:
         try:
             amount = float(message.text.replace(',', '.'))
@@ -442,9 +443,10 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_usdt[user_id]
             await process_usdt_conversion(message, amount)
+            return  # <-- добавил return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
-        return
+            return
     if user_id in waiting_for_cny:
         try:
             amount = float(message.text.replace(',', '.'))
@@ -452,9 +454,10 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_cny[user_id]
             await process_cny_conversion(message, amount)
+            return  # <-- добавил return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
-        return
+            return
     await message.answer("Используйте кнопки меню или команды /start, /course, /convert_rub, /convert_usdt, /convert_cny")
 
 # ---------- Коллбэки ----------
@@ -462,36 +465,18 @@ async def handle_number(message: Message):
 async def back_to_course_callback(callback: CallbackQuery):
     await callback.answer()
     text = format_main_menu()
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 @dp.callback_query(F.data == "course")
 async def course_callback(callback: CallbackQuery):
     await callback.answer()
     text = format_course_text()
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
 
 @dp.callback_query(F.data == "convert")
 async def convert_callback(callback: CallbackQuery):
     await callback.answer()
-    try:
-        await callback.message.edit_text("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
+    await callback.message.answer("💱 Выберите направление:", parse_mode="Markdown", reply_markup=convert_menu_keyboard())
 
 @dp.callback_query(F.data.startswith("conv_"))
 async def convert_pair_callback(callback: CallbackQuery):
@@ -527,13 +512,7 @@ async def buy_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "sell")
 async def sell_callback(callback: CallbackQuery):
@@ -546,13 +525,7 @@ async def sell_callback(callback: CallbackQuery):
         "• Курс фиксируется на 1 час после согласования\n\n"
         "Для оформления нажмите «Продолжить»."
     )
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=action_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=action_keyboard())
 
 @dp.callback_query(F.data == "services")
 async def services_callback(callback: CallbackQuery):
@@ -568,13 +541,7 @@ async def services_callback(callback: CallbackQuery):
         "• Консультации по расчётам с Китаем\n\n"
         "Для подробностей напишите мне в личный чат."
     )
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=services_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=services_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=services_keyboard())
 
 @dp.callback_query(F.data == "about")
 async def about_callback(callback: CallbackQuery):
@@ -588,13 +555,7 @@ async def about_callback(callback: CallbackQuery):
         "🏢 Сделки проходят в офисе\n\n"
         "Свяжитесь со мной для сделки:"
     )
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=contact_keyboard())
 
 @dp.callback_query(F.data == "refresh")
 async def refresh_callback(callback: CallbackQuery):
@@ -603,13 +564,7 @@ async def refresh_callback(callback: CallbackQuery):
     get_cny_rub_rate(force=True)
     get_usdt_cny_rate(force=True)
     text = format_main_menu()
-    try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logger.error(f"Edit error: {e}")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 # ---------- Запуск ----------
 async def main():
