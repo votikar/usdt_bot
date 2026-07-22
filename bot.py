@@ -171,11 +171,10 @@ def get_cny_buy_rate():
         return direct - deltas["delta_cny_rub_buy"]
     return None
 
-# ---------- Форматирование текста ----------
+# ---------- Форматирование (без USDT/CNY) ----------
 def format_main_menu():
     usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
-    usdt_cny = get_usdt_cny_rate()
     date = datetime.now().strftime("%d.%m.%Y")
     lines = [
         f"📅 {date}",
@@ -191,11 +190,6 @@ def format_main_menu():
         lines += [f"🇨🇳 CNY", f"**{cny:.2f}** ₽"]
     else:
         lines += ["🇨🇳 CNY", "⚠️ Временно недоступен"]
-    lines.append("")
-    if usdt_cny is not None:
-        lines += [f"🇺🇸 USDT/CNY", f"**{usdt_cny:.2f}** ¥"]
-    else:
-        lines += ["🇺🇸 USDT/CNY", "⚠️ Временно недоступен"]
     lines += [
         "━━━━━━━━━━━━━━",
         "",
@@ -209,7 +203,6 @@ def format_main_menu():
 def format_course_text():
     usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
-    usdt_cny = get_usdt_cny_rate()
     date = datetime.now().strftime("%d.%m.%Y")
     lines = [
         f"📅 {date}",
@@ -225,11 +218,6 @@ def format_course_text():
         lines += [f"🇨🇳 CNY", f"**{cny:.2f}** ₽"]
     else:
         lines += ["🇨🇳 CNY", "⚠️ Временно недоступен"]
-    lines.append("")
-    if usdt_cny is not None:
-        lines += [f"🇺🇸 USDT/CNY", f"**{usdt_cny:.2f}** ¥"]
-    else:
-        lines += ["🇺🇸 USDT/CNY", "⚠️ Временно недоступен"]
     lines += [
         "━━━━━━━━━━━━━━",
         "",
@@ -582,7 +570,7 @@ async def refresh_callback(callback: CallbackQuery):
     await callback.answer()
     get_usdt_rub_rate(force=True)
     get_cny_rub_rate(force=True)
-    get_usdt_cny_rate(force=True)
+    get_usdt_cny_rate(force=True)  # для внутренних расчётов, но не показывается
     text = format_main_menu()
     await callback.message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
