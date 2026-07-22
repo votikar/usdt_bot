@@ -29,8 +29,8 @@ def get_delta_from_env(key, default):
 deltas = {
     "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
     "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
-    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),
-    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),
+    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),      # наценка на CNY при продаже
+    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),  # скидка при покупке CNY
 }
 
 # ---------- Кеш курсов ----------
@@ -133,41 +133,48 @@ def get_usdt_cny_rate(force=False):
     return None
 
 # ---------- Курсы для операций ----------
-def get_usdt_sell_rate():
+def get_usdt_sell_rate():   # RUB → USDT (ты продаёшь USDT)
     rate = get_usdt_rub_rate()
     return rate + deltas["delta_rub_to_usdt"] if rate else None
 
-def get_usdt_buy_rate():
+def get_usdt_buy_rate():    # USDT → RUB (ты покупаешь USDT)
     rate = get_usdt_rub_rate()
     return rate - deltas["delta_usdt_to_rub"] if rate else None
 
-def get_cny_sell_rate():
+def get_cny_sell_rate():   # RUB → CNY (ты продаёшь CNY) – дороже рынка
     usdt_rub = get_usdt_rub_rate()
     usdt_cny = get_usdt_cny_rate()
     if usdt_rub is not None and usdt_cny is not None and usdt_cny != 0:
-        return (usdt_rub + deltas["delta_rub_to_usdt"]) / (usdt_cny + deltas["delta_cny_rub"])
+        # Увеличиваем числитель, уменьшаем знаменатель → курс выше
+        rate = (usdt_rub + deltas["delta_rub_to_usdt"]) / (usdt_cny - deltas["delta_cny_rub"])
+        logger.info(f"CNY sell rate (cross): {rate:.4f}")
+        return rate
+    # fallback
     direct = get_cny_rub_rate()
     if direct is not None:
         return direct + deltas["delta_cny_rub"]
     return None
 
-def get_cny_buy_rate():
+def get_cny_buy_rate():    # CNY → RUB (ты покупаешь CNY) – дешевле рынка
     usdt_rub = get_usdt_rub_rate()
     usdt_cny = get_usdt_cny_rate()
     if usdt_rub is not None and usdt_cny is not None and usdt_cny != 0:
-        rate = (usdt_rub - deltas["delta_usdt_to_rub"]) / (usdt_cny - deltas["delta_cny_rub_buy"])
+        # Уменьшаем числитель, увеличиваем знаменатель → курс ниже
+        rate = (usdt_rub - deltas["delta_usdt_to_rub"]) / (usdt_cny + deltas["delta_cny_rub_buy"])
         if rate <= 0:
+            logger.warning("Negative buy rate, using fallback")
             direct = get_cny_rub_rate()
             if direct is not None:
                 return direct - deltas["delta_cny_rub_buy"]
             return None
+        logger.info(f"CNY buy rate (cross): {rate:.4f}")
         return rate
     direct = get_cny_rub_rate()
     if direct is not None:
         return direct - deltas["delta_cny_rub_buy"]
     return None
 
-# ---------- Форматирование (красивый стиль) ----------
+# ---------- Форматирование (красивый стиль Team Bot) ----------
 def format_main_menu():
     usdt = get_usdt_sell_rate()
     cny = get_cny_sell_rate()
@@ -223,6 +230,8 @@ def format_course_text():
     return "\n".join(lines)
 
 def format_convert_rub_result(amount_rub, usdt, cny):
+    sell_usdt = get_usdt_sell_rate()
+    sell_cny = get_cny_sell_rate()
     lines = [
         "💱 **Результат расчёта**",
         "━━━━━━━━━━━━━━",
@@ -233,12 +242,13 @@ def format_convert_rub_result(amount_rub, usdt, cny):
         f"💵 **{usdt:.4f}** USDT" if usdt is not None else "💵 USDT: ❌",
         f"🇨🇳 **{cny:.2f}** CNY" if cny is not None else "🇨🇳 CNY: ❌",
         "━━━━━━━━━━━━━━",
-        f"Курс USDT: **{get_usdt_sell_rate():.2f}** ₽" if get_usdt_sell_rate() else "",
-        f"Курс CNY: **{get_cny_sell_rate():.2f}** ₽" if get_cny_sell_rate() else ""
+        f"Курс продажи USDT: **{sell_usdt:.2f}** ₽" if sell_usdt else "",
+        f"Курс продажи CNY: **{sell_cny:.2f}** ₽" if sell_cny else ""
     ]
     return "\n".join(lines)
 
 def format_convert_usdt_result(amount_usdt, rub):
+    buy_usdt = get_usdt_buy_rate()
     lines = [
         "💱 **Результат расчёта**",
         "━━━━━━━━━━━━━━",
@@ -248,11 +258,12 @@ def format_convert_usdt_result(amount_usdt, rub):
         "Получаете",
         f"**{rub:,.2f}** ₽" if rub is not None else "❌",
         "━━━━━━━━━━━━━━",
-        f"Курс покупки: **{get_usdt_buy_rate():.2f}** ₽" if get_usdt_buy_rate() else ""
+        f"Курс покупки USDT: **{buy_usdt:.2f}** ₽" if buy_usdt else ""
     ]
     return "\n".join(lines)
 
 def format_convert_cny_result(amount_cny, rub):
+    buy_cny = get_cny_buy_rate()
     lines = [
         "💱 **Результат расчёта**",
         "━━━━━━━━━━━━━━",
@@ -262,7 +273,7 @@ def format_convert_cny_result(amount_cny, rub):
         "Получаете",
         f"**{rub:,.2f}** ₽" if rub is not None else "❌",
         "━━━━━━━━━━━━━━",
-        f"Курс покупки: **{get_cny_buy_rate():.2f}** ₽" if get_cny_buy_rate() else ""
+        f"Курс покупки CNY: **{buy_cny:.2f}** ₽" if buy_cny else ""
     ]
     return "\n".join(lines)
 
@@ -432,7 +443,7 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_rub[user_id]
             await process_rub_conversion(message, amount)
-            return  # <-- добавил return
+            return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
             return
@@ -443,7 +454,7 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_usdt[user_id]
             await process_usdt_conversion(message, amount)
-            return  # <-- добавил return
+            return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
             return
@@ -454,7 +465,7 @@ async def handle_number(message: Message):
                 raise ValueError
             del waiting_for_cny[user_id]
             await process_cny_conversion(message, amount)
-            return  # <-- добавил return
+            return
         except:
             await message.answer("❌ Введите положительное число.", reply_markup=contact_keyboard())
             return
