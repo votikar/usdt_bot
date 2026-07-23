@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime
 
 import requests
@@ -27,10 +26,10 @@ def get_delta_from_env(key, default):
     return default
 
 deltas = {
-    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),   # наценка при продаже USDT
-    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),    # скидка при покупке USDT
-    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),          # наценка при продаже CNY
-    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50), # скидка при покупке CNY
+    "delta_rub_to_usdt": get_delta_from_env("DELTA_RUB_USDT", 0.30),
+    "delta_usdt_to_rub": get_delta_from_env("DELTA_USDT_RUB", 0.20),
+    "delta_cny_rub": get_delta_from_env("DELTA_CNY_RUB", 0.10),
+    "delta_cny_rub_buy": get_delta_from_env("DELTA_CNY_RUB_BUY", 0.50),
 }
 
 # ---------- Кеш курсов ----------
@@ -131,7 +130,7 @@ def get_usdt_cny_rate(force=False):
         logger.warning(f"exchangerate.host USDT/CNY failed: {e}")
     return None
 
-# ---------- Рыночные и операционные курсы ----------
+# ---------- Курсы для операций ----------
 def get_usdt_sell_rate():
     rate = get_usdt_rub_rate()
     return rate + deltas["delta_rub_to_usdt"] if rate else None
@@ -223,7 +222,7 @@ def format_sale_result(amount, currency, rate, total_rub):
 
 def format_services():
     text = (
-        "📋 **Условия и услуги**\n\n"
+        "📋 **Услуги и условия**\n\n"
         "• Покупка и продажа USDT и CNY (наличные)\n"
         "• Сделки проходят в моём офисе\n"
         "• Курс фиксируется на 1 час после согласования\n"
@@ -232,13 +231,52 @@ def format_services():
     )
     return text
 
+def format_about():
+    text = (
+        "ℹ️ **О нас**\n\n"
+        "🏦 OnlineMena — надёжный обменник USDT и CNY.\n"
+        "✅ Актуальные биржевые курсы\n"
+        "⚡ Мгновенный расчёт\n"
+        "💬 Личный менеджер\n"
+        "🏢 Сделки проходят в моём офисе\n\n"
+        "Для связи нажмите кнопку ниже."
+    )
+    return text
+
+def format_course_text():
+    usdt = get_usdt_sell_rate()
+    cny = get_cny_sell_rate()
+    date = datetime.now().strftime("%d.%m.%Y")
+    lines = [
+        f"📅 {date}",
+        "📈 **Текущие курсы**",
+        "━━━━━━━━━━━━━━",
+    ]
+    if usdt is not None:
+        lines += [f"💵 USDT", f"**{usdt:.2f}** ₽"]
+    else:
+        lines += ["💵 USDT", "⚠️ Временно недоступен"]
+    lines.append("")
+    if cny is not None:
+        lines += [f"🇨🇳 CNY", f"**{cny:.2f}** ₽"]
+    else:
+        lines += ["🇨🇳 CNY", "⚠️ Временно недоступен"]
+    lines += [
+        "━━━━━━━━━━━━━━",
+        "",
+        "✅ Актуальный биржевой курс",
+        "💬 Ответ менеджера: 2–5 минут"
+    ]
+    return "\n".join(lines)
+
 # ---------- Клавиатуры ----------
 def main_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Стоимость покупки", callback_data="purchase")],
         [InlineKeyboardButton(text="💸 Стоимость продажи", callback_data="sale")],
-        [InlineKeyboardButton(text="📋 Услуги", callback_data="services"),
-         InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")]
+        [InlineKeyboardButton(text="💬 Связаться со мной", url="https://t.me/Hans77888")],
+        [InlineKeyboardButton(text="📋 Услуги", callback_data="services")],
+        [InlineKeyboardButton(text="🔄 Обновить курс", callback_data="refresh")]
     ])
 
 def currency_keyboard(action):
@@ -261,9 +299,16 @@ def services_keyboard():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
     ])
 
-# ---------- Обработчики состояний ----------
+def about_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Связаться со мной", url="https://t.me/Hans77888")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_course")]
+    ])
+
+# ---------- Состояния ----------
 waiting_for_amount = {}  # user_id -> {'action': 'purchase'/'sale', 'currency': 'USDT'/'CNY'}
 
+# ---------- Обработчики команд ----------
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     text = format_main_menu()
@@ -271,8 +316,22 @@ async def start_cmd(message: Message):
 
 @dp.message(Command("course"))
 async def course_cmd(message: Message):
-    text = format_main_menu()
+    text = format_course_text()
     await message.answer(text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+
+@dp.message(Command("contact"))
+async def contact_cmd(message: Message):
+    await message.answer(
+        "💬 **Связь со мной**\n\n"
+        "Напишите мне в личные сообщения, я отвечу в течение 2–5 минут.",
+        parse_mode="Markdown",
+        reply_markup=contact_keyboard()
+    )
+
+@dp.message(Command("about"))
+async def about_cmd(message: Message):
+    text = format_about()
+    await message.answer(text, parse_mode="Markdown", reply_markup=about_keyboard())
 
 # ---------- Обработка кнопок ----------
 @dp.callback_query(F.data == "back_to_course")
@@ -369,13 +428,15 @@ async def handle_amount(message: Message):
 # ---------- Игнорирование остальных текстовых сообщений ----------
 @dp.message(F.text)
 async def ignore_other_text(message: Message):
-    await message.answer("Используйте кнопки меню для действий.")
+    await message.answer("Используйте кнопки меню или команды /start, /course, /contact, /about")
 
 # ---------- Запуск ----------
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="🏦 Главное меню"),
-        BotCommand(command="course", description="📈 Показать курсы")
+        BotCommand(command="course", description="📈 Текущий курс"),
+        BotCommand(command="contact", description="💬 Связаться со мной"),
+        BotCommand(command="about", description="ℹ️ О нас")
     ])
     await dp.start_polling(bot, skip_updates=True)
 
